@@ -1,0 +1,25 @@
+name: Deploy Bot
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'bot/**'
+      - 'requirements.txt'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to Core node
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd ~/SigilGate/SigilGate_bot
+            git pull origin main
+            source .venv/bin/activate
+            pip install -q -r requirements.txt
+            echo "${{ secrets.DEPLOY_SUDO_PASSWORD }}" | sudo -S systemctl restart sigilgate-bot
