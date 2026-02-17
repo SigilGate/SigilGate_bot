@@ -30,7 +30,7 @@ async def main() -> None:
     dp.include_router(user.router)
     dp.include_router(guest.router)
 
-    logger.info("Bot starting...")
+    logger.info("Bot starting (v0.1.0)...")
     await dp.start_polling(bot)
 
 
