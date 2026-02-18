@@ -1,7 +1,5 @@
 import json
 import logging
-import os
-import subprocess
 from pathlib import Path
 
 from aiogram import Bot, F, Router
@@ -12,6 +10,7 @@ from aiogram.fsm.storage.base import DEFAULT_STATE
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from bot.roles import Role
+from bot.runner import run_script
 
 logger = logging.getLogger(__name__)
 
@@ -84,31 +83,6 @@ def _confirm_text(username: str, email: str | None) -> str:
     )
 
 
-def _run_create(scripts_path: str, username: str, core_node: str,
-                telegram: str | None, telegram_id: int,
-                email: str | None) -> subprocess.CompletedProcess:
-    cmd = [
-        f"{scripts_path}/users/create.sh",
-        "--username", username,
-        "--core-node", core_node,
-        "--status", "inactive",
-        "--telegram-id", str(telegram_id),
-    ]
-    if telegram:
-        cmd += ["--telegram", f"@{telegram}"]
-    if email:
-        cmd += ["--email", email]
-
-    env = os.environ.copy()
-    return subprocess.run(cmd, capture_output=True, text=True, env=env)
-
-
-def _run_commit(scripts_path: str, message: str) -> subprocess.CompletedProcess:
-    cmd = [f"{scripts_path}/store/commit.sh", "--message", message]
-    env = os.environ.copy()
-    return subprocess.run(cmd, capture_output=True, text=True, env=env)
-
-
 # ---------------------------------------------------------------------------
 # /reg — точка входа
 # ---------------------------------------------------------------------------
@@ -166,7 +140,6 @@ async def reg_email(message: Message, state: FSMContext) -> None:
                               reply_markup=_kb_email())
         return
 
-    # Простая валидация: формат *@*.*
     if "@" not in email or "." not in email.split("@")[-1]:
         await message.answer("Некорректный email. Попробуйте ещё раз или нажмите «Пропустить»:",
                               reply_markup=_kb_email())
@@ -194,7 +167,7 @@ async def reg_skip_email(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Шаг 3: подтверждение
+# Шаг 3: подтверждение и отправка
 # ---------------------------------------------------------------------------
 
 @router.callback_query(RegStates.confirm, F.data == "reg:submit")
@@ -206,13 +179,14 @@ async def reg_submit(
     scripts_path: str,
     default_core_node: str,
     admin_ids: set,
+    verbose: bool,
 ) -> None:
     tg_user = callback.from_user
     data = await state.get_data()
     username: str = data["username"]
     email: str | None = data.get("email")
 
-    # Проверка уникальности по telegram_id (повторная — на случай гонки)
+    # Повторная проверка уникальности по telegram_id (на случай гонки)
     if not _is_telegram_id_unique(tg_user.id, store_path):
         await state.clear()
         await callback.message.edit_text(
@@ -221,17 +195,27 @@ async def reg_submit(
         await callback.answer()
         return
 
-    result = _run_create(
-        scripts_path=scripts_path,
-        username=username,
-        core_node=default_core_node,
-        telegram=tg_user.username,
-        telegram_id=tg_user.id,
-        email=email,
+    # Формируем команду create.sh
+    cmd_create = [
+        f"{scripts_path}/users/create.sh",
+        "--username", username,
+        "--core-node", default_core_node,
+        "--status", "inactive",
+        "--telegram-id", str(tg_user.id),
+    ]
+    if tg_user.username:
+        cmd_create += ["--telegram", f"@{tg_user.username}"]
+    if email:
+        cmd_create += ["--email", email]
+
+    rc, stdout, stderr = await run_script(
+        cmd_create,
+        send=callback.message.answer,
+        verbose=verbose,
     )
 
-    if result.returncode != 0:
-        logger.error("users/create.sh failed: %s", result.stderr)
+    if rc != 0:
+        logger.error("users/create.sh failed: %s", stderr)
         await callback.message.edit_text(
             "Произошла ошибка при отправке заявки. Попробуйте позже."
         )
@@ -239,8 +223,13 @@ async def reg_submit(
         await callback.answer()
         return
 
-    user_id = result.stdout.strip()
-    _run_commit(scripts_path, f"Reg request: {username} (ID: {user_id}) via Telegram")
+    user_id = stdout.strip()
+
+    cmd_commit = [
+        f"{scripts_path}/store/commit.sh",
+        "--message", f"Reg request: {username} (ID: {user_id}) via Telegram",
+    ]
+    await run_script(cmd_commit, send=callback.message.answer, verbose=verbose)
 
     await state.clear()
     await callback.message.edit_text(

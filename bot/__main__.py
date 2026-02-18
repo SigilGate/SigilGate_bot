@@ -26,6 +26,7 @@ async def main() -> None:
     dp["admin_ids"] = config["admin_ids"]
     dp["scripts_path"] = config["scripts_path"]
     dp["default_core_node"] = config["default_core_node"]
+    dp["verbose"] = config["verbose"]
 
     dp.update.middleware(AuthMiddleware(
         store_path=config["store_path"],

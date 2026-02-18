@@ -30,10 +30,13 @@ def load_config() -> dict:
     if not default_core_node:
         logger.warning("SIGIL_DEFAULT_CORE_NODE is not set, user registration will not work")
 
+    verbose = os.environ.get("SIGILGATE_VERBOSE", "").lower() in ("1", "true", "yes")
+
     return {
         "token": token,
         "store_path": store_path,
         "admin_ids": admin_ids,
         "scripts_path": scripts_path,
         "default_core_node": default_core_node,
+        "verbose": verbose,
     }
