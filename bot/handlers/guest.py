@@ -1,6 +1,5 @@
 from aiogram import F, Router
 from aiogram.filters import StateFilter
-from aiogram.fsm.storage.base import DEFAULT_STATE
 from aiogram.types import Message
 
 from bot.roles import Role
@@ -8,7 +7,7 @@ from bot.roles import Role
 router = Router()
 
 
-@router.message(F.text, StateFilter(DEFAULT_STATE))
+@router.message(F.text, StateFilter(None))
 async def guest_fallback(message: Message, role: Role) -> None:
     if role == Role.GUEST:
         await message.answer(
