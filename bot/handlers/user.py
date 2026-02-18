@@ -48,8 +48,10 @@ def _kb_add_cancel() -> InlineKeyboardMarkup:
     ]])
 
 
-def _kb_device_card(links: list[str]) -> InlineKeyboardMarkup:
-    rows = []
+def _kb_device_card(uuid: str, links: list[str]) -> InlineKeyboardMarkup:
+    rows = [
+        [InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"mydev:del:{uuid}")]
+    ]
     for i, link in enumerate(links):
         label = "📋 Скопировать конфигурацию" if len(links) == 1 else f"📋 Конфигурация {i + 1}"
         rows.append([
@@ -57,6 +59,13 @@ def _kb_device_card(links: list[str]) -> InlineKeyboardMarkup:
         ])
     rows.append([InlineKeyboardButton(text="← Назад", callback_data="mydev:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _kb_delete_confirm(uuid: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Да, удалить", callback_data=f"mydev:delok:{uuid}")],
+        [InlineKeyboardButton(text="Отмена",      callback_data=f"mydev:delno:{uuid}")],
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +208,7 @@ async def cb_device_card(
 
     await callback.message.edit_text(
         _format_device_card(device, links),
-        reply_markup=_kb_device_card(links),
+        reply_markup=_kb_device_card(uuid, links),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -365,6 +374,127 @@ async def cb_add_cancel(
     await callback.message.edit_text(
         _list_text(devices),
         reply_markup=_kb_devices_list(devices),
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Удаление устройства — запрос подтверждения
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("mydev:del:"))
+async def cb_device_delete(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    uuid = callback.data.split(":", 2)[2]
+
+    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
+    rc, stdout, _ = await run_script(cmd_get, verbose=False)
+    if rc != 0 or not stdout:
+        await callback.answer("Устройство не найдено.", show_alert=True)
+        return
+
+    try:
+        device = json.loads(stdout)
+    except json.JSONDecodeError:
+        await callback.answer("Ошибка при разборе данных.", show_alert=True)
+        return
+
+    if device.get("user_id") != registry_user["id"]:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"Удалить устройство <b>{device['device']}</b>?\n\nЭто действие необратимо.",
+        reply_markup=_kb_delete_confirm(uuid),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Удаление устройства — подтверждение
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("mydev:delok:"))
+async def cb_device_delete_confirm(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    uuid = callback.data.split(":", 2)[2]
+
+    cmd = [f"{scripts_path}/devices/remove.sh", "--uuid", uuid]
+    rc, stdout, stderr = await run_script(cmd, send=callback.message.answer, verbose=verbose)
+
+    if rc != 0:
+        logger.error("devices/remove.sh failed: %s", stderr)
+        await callback.message.edit_text("Не удалось удалить устройство. Попробуйте позже.")
+        await callback.answer()
+        return
+
+    devices = await _fetch_devices(registry_user["id"], scripts_path, verbose, callback.message.answer)
+    if devices is not None:
+        await callback.message.edit_text(
+            _list_text(devices),
+            reply_markup=_kb_devices_list(devices),
+        )
+    else:
+        await callback.message.edit_text("Устройство удалено.")
+
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Удаление устройства — отмена (возврат к карточке)
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("mydev:delno:"))
+async def cb_device_delete_cancel(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    uuid = callback.data.split(":", 2)[2]
+
+    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
+    rc, stdout, _ = await run_script(cmd_get, verbose=False)
+    if rc != 0:
+        await callback.answer("Ошибка.", show_alert=True)
+        return
+
+    try:
+        device = json.loads(stdout)
+    except json.JSONDecodeError:
+        await callback.answer("Ошибка при разборе данных.", show_alert=True)
+        return
+
+    links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
+
+    await callback.message.edit_text(
+        _format_device_card(device, links),
+        reply_markup=_kb_device_card(uuid, links),
+        parse_mode="HTML",
     )
     await callback.answer()
 
