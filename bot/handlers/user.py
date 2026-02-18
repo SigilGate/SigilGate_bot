@@ -2,7 +2,9 @@ import json
 import logging
 
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     CallbackQuery,
     CopyTextButton,
@@ -20,7 +22,15 @@ router = Router()
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# FSM
+# ---------------------------------------------------------------------------
+
+class AddDeviceStates(StatesGroup):
+    waiting_name = State()
+
+
+# ---------------------------------------------------------------------------
+# Keyboards
 # ---------------------------------------------------------------------------
 
 def _kb_devices_list(devices: list[dict]) -> InlineKeyboardMarkup:
@@ -28,7 +38,14 @@ def _kb_devices_list(devices: list[dict]) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text=d["device"], callback_data=f"mydev:c:{d['uuid']}")]
         for d in devices
     ]
+    rows.append([InlineKeyboardButton(text="+ Добавить устройство", callback_data="mydev:add")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _kb_add_cancel() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Отмена", callback_data="mydev:add_cancel"),
+    ]])
 
 
 def _kb_device_card(links: list[str]) -> InlineKeyboardMarkup:
@@ -40,6 +57,16 @@ def _kb_device_card(links: list[str]) -> InlineKeyboardMarkup:
         ])
     rows.append([InlineKeyboardButton(text="← Назад", callback_data="mydev:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------------------
+# Formatters
+# ---------------------------------------------------------------------------
+
+def _list_text(devices: list[dict]) -> str:
+    if not devices:
+        return "У вас нет зарегистрированных устройств."
+    return f"Ваши устройства: {len(devices)}"
 
 
 def _format_device_card(device: dict, links: list[str]) -> str:
@@ -62,6 +89,10 @@ def _format_device_card(device: dict, links: list[str]) -> str:
 
     return "\n".join(lines)
 
+
+# ---------------------------------------------------------------------------
+# Script helpers
+# ---------------------------------------------------------------------------
 
 async def _fetch_devices(
     user_id: int,
@@ -124,12 +155,8 @@ async def cmd_devices(
         await message.answer("Не удалось получить список устройств.")
         return
 
-    if not devices:
-        await message.answer("У вас нет зарегистрированных устройств.")
-        return
-
     await message.answer(
-        f"Ваши устройства: {len(devices)}",
+        _list_text(devices),
         reply_markup=_kb_devices_list(devices),
     )
 
@@ -164,7 +191,6 @@ async def cb_device_card(
         await callback.answer("Ошибка при разборе данных.", show_alert=True)
         return
 
-    # Проверяем что устройство принадлежит текущему пользователю
     if device.get("user_id") != registry_user["id"]:
         await callback.answer("Доступ ограничен.", show_alert=True)
         return
@@ -201,23 +227,151 @@ async def cb_devices_back(
         return
 
     await callback.message.edit_text(
-        f"Ваши устройства: {len(devices)}",
+        _list_text(devices),
         reply_markup=_kb_devices_list(devices),
     )
     await callback.answer()
 
 
 # ---------------------------------------------------------------------------
-# Заглушки
+# Добавление устройства — запрос имени
 # ---------------------------------------------------------------------------
 
-@router.message(Command("add_device"))
-async def cmd_add_device(message: Message, role: Role) -> None:
-    if role in (Role.USER, Role.ADMIN):
-        await message.answer("Здесь будет добавление устройства.")
-    else:
-        await message.answer("Доступ ограничен.")
+@router.callback_query(F.data == "mydev:add")
+async def cb_add_device_start(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    state: FSMContext,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
 
+    await state.set_state(AddDeviceStates.waiting_name)
+    await callback.message.edit_text(
+        "Введите название нового устройства:",
+        reply_markup=_kb_add_cancel(),
+    )
+    await callback.answer()
+
+
+@router.message(Command("add_device"))
+async def cmd_add_device(
+    message: Message,
+    role: Role,
+    registry_user: dict | None,
+    state: FSMContext,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN):
+        await message.answer("Доступ ограничен.")
+        return
+
+    if registry_user is None:
+        await message.answer("Ваш аккаунт не найден в реестре.")
+        return
+
+    await state.set_state(AddDeviceStates.waiting_name)
+    await message.answer(
+        "Введите название нового устройства:",
+        reply_markup=_kb_add_cancel(),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Добавление устройства — получение имени и запуск скрипта
+# ---------------------------------------------------------------------------
+
+@router.message(AddDeviceStates.waiting_name)
+async def add_device_name(
+    message: Message,
+    role: Role,
+    registry_user: dict | None,
+    state: FSMContext,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await state.clear()
+        await message.answer("Доступ ограничен.")
+        return
+
+    device_name = (message.text or "").strip()
+
+    if not device_name:
+        await message.answer(
+            "Название не может быть пустым. Попробуйте ещё раз:",
+            reply_markup=_kb_add_cancel(),
+        )
+        return
+
+    if len(device_name) > 64:
+        await message.answer(
+            "Название слишком длинное (максимум 64 символа). Попробуйте ещё раз:",
+            reply_markup=_kb_add_cancel(),
+        )
+        return
+
+    await state.clear()
+
+    cmd = [
+        f"{scripts_path}/devices/add.sh",
+        "--user", str(registry_user["id"]),
+        "--device", device_name,
+    ]
+    rc, stdout, stderr = await run_script(cmd, send=message.answer, verbose=verbose)
+
+    if rc != 0:
+        logger.error("devices/add.sh failed: %s", stderr)
+        await message.answer("Не удалось добавить устройство. Попробуйте позже.")
+        return
+
+    await message.answer(f"Устройство <b>{device_name}</b> успешно добавлено.", parse_mode="HTML")
+
+    devices = await _fetch_devices(registry_user["id"], scripts_path, verbose, message.answer)
+    if devices is not None:
+        await message.answer(
+            _list_text(devices),
+            reply_markup=_kb_devices_list(devices),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Отмена добавления
+# ---------------------------------------------------------------------------
+
+@router.callback_query(StateFilter(AddDeviceStates), F.data == "mydev:add_cancel")
+async def cb_add_cancel(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    state: FSMContext,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    await state.clear()
+
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await callback.message.edit_text("Отменено.")
+        await callback.answer()
+        return
+
+    devices = await _fetch_devices(registry_user["id"], scripts_path, verbose, callback.message.answer)
+    if devices is None:
+        await callback.message.edit_text("Отменено.")
+        await callback.answer()
+        return
+
+    await callback.message.edit_text(
+        _list_text(devices),
+        reply_markup=_kb_devices_list(devices),
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# /remove_device — заглушка
+# ---------------------------------------------------------------------------
 
 @router.message(Command("remove_device"))
 async def cmd_remove_device(message: Message, role: Role) -> None:
