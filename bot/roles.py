@@ -23,7 +23,7 @@ def resolve_role(telegram_id: int, store_path: str, admin_ids: set[int]) -> Role
             for file in users_dir.glob("*.json"):
                 try:
                     data = json.loads(file.read_text())
-                    if data.get("telegram_id") == telegram_id and data.get("status") == "active":
+                    if data.get("telegram_id") == telegram_id:
                         return Role.USER
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning("Failed to read %s: %s", file, e)

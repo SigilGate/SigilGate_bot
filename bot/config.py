@@ -22,8 +22,18 @@ def load_config() -> dict:
         if part.isdigit():
             admin_ids.add(int(part))
 
+    scripts_path = os.environ.get("SIGIL_SCRIPTS_PATH", "")
+    if not scripts_path:
+        logger.warning("SIGIL_SCRIPTS_PATH is not set, script execution will not work")
+
+    default_core_node = os.environ.get("SIGIL_DEFAULT_CORE_NODE", "")
+    if not default_core_node:
+        logger.warning("SIGIL_DEFAULT_CORE_NODE is not set, user registration will not work")
+
     return {
         "token": token,
         "store_path": store_path,
         "admin_ids": admin_ids,
+        "scripts_path": scripts_path,
+        "default_core_node": default_core_node,
     }

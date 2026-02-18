@@ -9,7 +9,8 @@ router = Router()
 
 COMMANDS_GUEST = (
     "Доступные команды:\n"
-    "/start — информация о боте"
+    "/start — информация о боте\n"
+    "/reg — подать заявку на подключение"
 )
 
 COMMANDS_USER = (
@@ -40,7 +41,4 @@ async def cmd_start(message: Message, role: Role) -> None:
     elif role == Role.USER:
         await message.answer(greeting + COMMANDS_USER)
     else:
-        await message.answer(
-            greeting + COMMANDS_GUEST + "\n\n"
-            "Для получения доступа обратитесь к администратору."
-        )
+        await message.answer(greeting + COMMANDS_GUEST)
