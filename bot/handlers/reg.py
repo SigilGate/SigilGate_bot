@@ -176,7 +176,6 @@ async def reg_submit(
     bot: Bot,
     store_path: str,
     scripts_path: str,
-    default_core_node: str,
     admin_ids: set,
     verbose: bool,
 ) -> None:
@@ -198,7 +197,6 @@ async def reg_submit(
     cmd_create = [
         f"{scripts_path}/users/create.sh",
         "--username", username,
-        "--core-node", default_core_node,
         "--status", "inactive",
         "--telegram-id", str(tg_user.id),
     ]
