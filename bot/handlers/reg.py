@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -113,7 +114,7 @@ async def reg_username(message: Message, state: FSMContext,
                               reply_markup=_kb_cancel())
         return
 
-    if not _is_username_unique(username, store_path):
+    if not await asyncio.to_thread(_is_username_unique, username, store_path):
         await message.answer("Этот никнейм уже занят. Введите другой:",
                               reply_markup=_kb_cancel())
         return
@@ -185,7 +186,7 @@ async def reg_submit(
     email: str | None = data.get("email")
 
     # Повторная проверка уникальности по telegram_id (на случай гонки)
-    if not _is_telegram_id_unique(tg_user.id, store_path):
+    if not await asyncio.to_thread(_is_telegram_id_unique, tg_user.id, store_path):
         await state.clear()
         await callback.message.edit_text(
             "Вы уже подали заявку ранее. Ожидайте решения администратора."

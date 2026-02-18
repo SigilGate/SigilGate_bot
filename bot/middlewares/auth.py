@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import Any, Awaitable, Callable
 
@@ -28,7 +29,7 @@ class AuthMiddleware(BaseMiddleware):
                 user = event.callback_query.from_user
 
         if user:
-            registry_user = find_user_by_telegram_id(user.id, self.store_path)
+            registry_user = await asyncio.to_thread(find_user_by_telegram_id, user.id, self.store_path)
             if user.id in self.admin_ids:
                 role = Role.ADMIN
             elif registry_user is not None:
