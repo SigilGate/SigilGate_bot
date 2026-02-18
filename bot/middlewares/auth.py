@@ -4,7 +4,7 @@ from typing import Any, Awaitable, Callable
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject, Update
 
-from bot.roles import Role, resolve_role
+from bot.roles import Role, find_user_by_telegram_id, resolve_role
 
 logger = logging.getLogger(__name__)
 
@@ -28,10 +28,18 @@ class AuthMiddleware(BaseMiddleware):
                 user = event.callback_query.from_user
 
         if user:
-            role = resolve_role(user.id, self.store_path, self.admin_ids)
+            registry_user = find_user_by_telegram_id(user.id, self.store_path)
+            if user.id in self.admin_ids:
+                role = Role.ADMIN
+            elif registry_user is not None:
+                role = Role.USER
+            else:
+                role = Role.GUEST
             data["role"] = role
+            data["registry_user"] = registry_user
             logger.debug("User %s (id=%d) -> role=%s", user.full_name, user.id, role.value)
         else:
             data["role"] = Role.GUEST
+            data["registry_user"] = None
 
         return await handler(event, data)
