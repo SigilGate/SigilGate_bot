@@ -83,9 +83,8 @@
 | `--telegram` | нет | Новый username; пустая строка → `null` |
 | `--telegram-id` | нет | Новый ID; пустая строка → `null` |
 | `--hash` | нет | Новый хеш; пустая строка → `null` |
-
-> **Примечание:** `core_nodes` через `modify.sh` не изменяется.
-> Прямого скрипта для этого нет — требует ручного редактирования JSON.
+| `--add-core-node` | нет | Добавить IP в `core_nodes[]` (идемпотентно) |
+| `--remove-core-node` | нет | Удалить IP из `core_nodes[]` |
 
 ---
 
@@ -314,6 +313,5 @@
 
 | Ограничение | Влияние |
 |---|---|
-| `devices/create.sh` требует `user.status=active` | Нельзя добавить устройство `inactive`-пользователю |
-| `users/modify.sh` не изменяет `core_nodes` | Назначение Core-ноды при одобрении требует отдельного решения |
-| Нет прямого assign/unassign устройства на конкретную Entry-ноду | Управление Entry-нодами косвенное: через `entry/add-client.sh` и `entry/remove-client.sh` напрямую |
+| `devices/create.sh` требует `user.status=active` | Нельзя добавить устройство `inactive`-пользователю — соответствует политике |
+| Нет прямого assign/unassign устройства на конкретную Entry-ноду | Управление Entry-нодами через `entry/add-client.sh` / `entry/remove-client.sh` напрямую |
