@@ -1,7 +1,7 @@
 import json
 import logging
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.filters import Command
 from aiogram.types import (
     CallbackQuery,
@@ -221,6 +221,270 @@ async def cb_users_back(
     await callback.message.edit_text(
         _list_text(status_filter, len(users)),
         reply_markup=_kb_users_list(users, status_filter),
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Helpers для обработки заявок на регистрацию
+# ---------------------------------------------------------------------------
+
+def _kb_reg_notify(user_id: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✓ Одобрить",      callback_data=f"reg:approve:{user_id}"),
+        InlineKeyboardButton(text="✗ Удалить",       callback_data=f"reg:decline:{user_id}"),
+        InlineKeyboardButton(text="⚑ Заблокировать", callback_data=f"reg:ban:{user_id}"),
+    ]])
+
+
+def _kb_core_selection(user_id: str, nodes: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for node in nodes:
+        ip = node["ip"]
+        label = node.get("hostname") or ip
+        location = node.get("location", "")
+        btn_text = f"{label} ({location})" if location else label
+        rows.append([InlineKeyboardButton(text=btn_text, callback_data=f"reg:core:{user_id}:{ip}")])
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data=f"reg:back:{user_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _fmt_reg_notify(user: dict) -> str:
+    telegram = user.get("telegram") or "—"
+    return (
+        "<b>Новая заявка на регистрацию</b>\n\n"
+        f"Пользователь: {user.get('username')}\n"
+        f"Telegram: {telegram}\n"
+        f"ID в реестре: {user.get('id')}"
+    )
+
+
+async def _fetch_user_by_id(
+    user_id: str, scripts_path: str, verbose: bool, send
+) -> dict | None:
+    rc, stdout, stderr = await run_script(
+        [f"{scripts_path}/users/get.sh", "--id", user_id],
+        send=send, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("users/get.sh failed: %s", stderr)
+        return None
+    try:
+        return json.loads(stdout)
+    except json.JSONDecodeError:
+        logger.error("users/get.sh returned invalid JSON: %s", stdout)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Одобрение заявки — показать выбор Core-ноды
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("reg:approve:"))
+async def cb_reg_approve(
+    callback: CallbackQuery,
+    role: Role,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    user_id = callback.data.split(":")[2]
+
+    rc, stdout, stderr = await run_script(
+        [f"{scripts_path}/nodes/list-core.sh"],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("nodes/list-core.sh failed: %s", stderr)
+        await callback.answer("Не удалось получить список Core-нод.", show_alert=True)
+        return
+
+    try:
+        nodes = json.loads(stdout)
+    except json.JSONDecodeError:
+        logger.error("nodes/list-core.sh returned invalid JSON: %s", stdout)
+        await callback.answer("Ошибка при получении списка нод.", show_alert=True)
+        return
+
+    if not nodes:
+        await callback.answer("Нет доступных Core-нод.", show_alert=True)
+        return
+
+    user = await _fetch_user_by_id(user_id, scripts_path, verbose, callback.message.answer)
+    username = user["username"] if user else f"ID={user_id}"
+
+    await callback.message.edit_text(
+        f"Выберите Core-ноду для <b>{username}</b>:",
+        reply_markup=_kb_core_selection(user_id, nodes),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Выбор Core-ноды → одобрение
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("reg:core:"))
+async def cb_reg_core(
+    callback: CallbackQuery,
+    role: Role,
+    bot: Bot,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    parts = callback.data.split(":", 3)  # reg:core:<user_id>:<core_ip>
+    if len(parts) < 4:
+        await callback.answer("Ошибка формата.", show_alert=True)
+        return
+
+    user_id = parts[2]
+    core_ip = parts[3]
+
+    user = await _fetch_user_by_id(user_id, scripts_path, verbose, callback.message.answer)
+    if not user:
+        await callback.answer("Пользователь не найден или уже обработан.", show_alert=True)
+        return
+
+    rc, stdout, stderr = await run_script(
+        [
+            f"{scripts_path}/users/update.sh",
+            "--id", user_id,
+            "--add-core-node", core_ip,
+            "--status", "active",
+        ],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("users/update.sh failed: %s", stderr)
+        await callback.answer("Ошибка при одобрении заявки.", show_alert=True)
+        return
+
+    username = user["username"]
+    await callback.message.edit_text(
+        f"Пользователь <b>{username}</b> одобрен.\nCore-нода: {core_ip}",
+        parse_mode="HTML",
+    )
+
+    tg_id = user.get("telegram_id")
+    if tg_id:
+        try:
+            await bot.send_message(
+                tg_id,
+                "Ваша заявка одобрена. Добро пожаловать в Sigil Gate!\n"
+                "Введите /start для начала работы.",
+            )
+        except Exception as e:
+            logger.warning("Failed to notify approved user %s: %s", tg_id, e)
+
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Отклонение заявки (удаление пользователя)
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("reg:decline:"))
+async def cb_reg_decline(
+    callback: CallbackQuery,
+    role: Role,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    user_id = callback.data.split(":")[2]
+
+    user = await _fetch_user_by_id(user_id, scripts_path, verbose, callback.message.answer)
+    username = user["username"] if user else f"ID={user_id}"
+
+    rc, stdout, stderr = await run_script(
+        [f"{scripts_path}/users/remove.sh", "--id", user_id],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("users/remove.sh failed: %s", stderr)
+        await callback.answer("Ошибка при удалении заявки.", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"Заявка пользователя <b>{username}</b> отклонена и удалена.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Блокировка при регистрации (archived)
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("reg:ban:"))
+async def cb_reg_ban(
+    callback: CallbackQuery,
+    role: Role,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    user_id = callback.data.split(":")[2]
+
+    user = await _fetch_user_by_id(user_id, scripts_path, verbose, callback.message.answer)
+    username = user["username"] if user else f"ID={user_id}"
+
+    rc, stdout, stderr = await run_script(
+        [f"{scripts_path}/users/update.sh", "--id", user_id, "--status", "archived"],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("users/update.sh failed: %s", stderr)
+        await callback.answer("Ошибка при блокировке пользователя.", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        f"Пользователь <b>{username}</b> заблокирован (archived).",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Назад к уведомлению (из выбора Core-ноды)
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("reg:back:"))
+async def cb_reg_back(
+    callback: CallbackQuery,
+    role: Role,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    user_id = callback.data.split(":")[2]
+
+    user = await _fetch_user_by_id(user_id, scripts_path, verbose, callback.message.answer)
+    if not user:
+        await callback.answer("Пользователь не найден или уже обработан.", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        _fmt_reg_notify(user),
+        reply_markup=_kb_reg_notify(str(user["id"])),
+        parse_mode="HTML",
     )
     await callback.answer()
 

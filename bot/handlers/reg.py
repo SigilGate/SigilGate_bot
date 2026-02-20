@@ -235,12 +235,22 @@ async def reg_submit(
     )
     await callback.answer()
 
-    # Уведомление администраторов
+    # Уведомление администраторов с inline-кнопками
     tg_name = f"@{tg_user.username}" if tg_user.username else f"id={tg_user.id}"
-    notify = f"Поступила заявка на подключение от пользователя {username} ({tg_name})"
+    notify_text = (
+        "<b>Новая заявка на регистрацию</b>\n\n"
+        f"Пользователь: {username}\n"
+        f"Telegram: {tg_name}\n"
+        f"ID в реестре: {user_id}"
+    )
+    kb_notify = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✓ Одобрить",      callback_data=f"reg:approve:{user_id}"),
+        InlineKeyboardButton(text="✗ Удалить",       callback_data=f"reg:decline:{user_id}"),
+        InlineKeyboardButton(text="⚑ Заблокировать", callback_data=f"reg:ban:{user_id}"),
+    ]])
     for admin_id in admin_ids:
         try:
-            await bot.send_message(admin_id, notify)
+            await bot.send_message(admin_id, notify_text, reply_markup=kb_notify, parse_mode="HTML")
         except Exception as e:
             logger.warning("Failed to notify admin %s: %s", admin_id, e)
 
