@@ -43,11 +43,47 @@ def _kb_users_list(users: list[dict], status_filter: str) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _kb_user_card(status_filter: str) -> InlineKeyboardMarkup:
-    """Клавиатура карточки: кнопка «Назад»."""
-    return InlineKeyboardMarkup(inline_keyboard=[[
+def _kb_user_card(user: dict, status_filter: str) -> InlineKeyboardMarkup:
+    """Клавиатура карточки с кнопками действий в зависимости от статуса пользователя."""
+    status = user.get("status", "")
+    core_nodes = user.get("core_nodes") or []
+    uid = str(user.get("id", ""))
+
+    rows: list[list[InlineKeyboardButton]] = []
+
+    if status == "inactive" and not core_nodes:
+        rows.append([
+            InlineKeyboardButton(text="✓ Одобрить", callback_data=f"user:approve:{uid}:{status_filter}"),
+            InlineKeyboardButton(text="✗ Удалить",  callback_data=f"user:remove:{uid}:{status_filter}"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="⚑ Заблокировать", callback_data=f"user:archive:{uid}:{status_filter}"),
+        ])
+    elif status == "inactive":
+        rows.append([
+            InlineKeyboardButton(text="▷ Восстановить", callback_data=f"user:activate:{uid}:{status_filter}"),
+            InlineKeyboardButton(text="⚑ Архивировать", callback_data=f"user:archive:{uid}:{status_filter}"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="✗ Удалить", callback_data=f"user:remove:{uid}:{status_filter}"),
+        ])
+    elif status == "active":
+        rows.append([
+            InlineKeyboardButton(text="⏸ Приостановить", callback_data=f"user:suspend:{uid}:{status_filter}"),
+            InlineKeyboardButton(text="⚑ Архивировать",  callback_data=f"user:archive:{uid}:{status_filter}"),
+        ])
+        rows.append([
+            InlineKeyboardButton(text="✗ Удалить", callback_data=f"user:remove:{uid}:{status_filter}"),
+        ])
+    elif status == "archived":
+        rows.append([
+            InlineKeyboardButton(text="✗ Удалить", callback_data=f"user:remove:{uid}:{status_filter}"),
+        ])
+
+    rows.append([
         InlineKeyboardButton(text="← Назад", callback_data=f"users:back:{status_filter}"),
-    ]])
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def _format_user_card(user: dict) -> str:
@@ -190,7 +226,7 @@ async def cb_user_card(
 
     await callback.message.edit_text(
         _format_user_card(user),
-        reply_markup=_kb_user_card(status_filter),
+        reply_markup=_kb_user_card(user, status_filter),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -216,6 +252,370 @@ async def cb_users_back(
     users = await _fetch_users(status_filter, scripts_path, verbose, callback.message.answer)
     if users is None:
         await callback.answer("Ошибка при получении списка.", show_alert=True)
+        return
+
+    await callback.message.edit_text(
+        _list_text(status_filter, len(users)),
+        reply_markup=_kb_users_list(users, status_filter),
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Каскадные операции с устройствами
+# ---------------------------------------------------------------------------
+
+async def _cascade_deactivate_devices(
+    user_id: str, scripts_path: str, verbose: bool, send
+) -> bool:
+    """Деактивировать все активные устройства пользователя (снять с Entry-нод)."""
+    rc, stdout, _ = await run_script(
+        [f"{scripts_path}/devices/list.sh", "--user", user_id],
+        send=send, verbose=verbose,
+    )
+    if rc != 0:
+        return False
+    try:
+        devices = json.loads(stdout)
+    except json.JSONDecodeError:
+        return False
+
+    for device in devices:
+        if device.get("status") != "active":
+            continue
+        uuid = device["uuid"]
+        rc, _, stderr = await run_script(
+            [f"{scripts_path}/devices/deactivate.sh", "--uuid", uuid],
+            send=send, verbose=verbose,
+        )
+        if rc != 0:
+            logger.error("devices/deactivate.sh failed for %s: %s", uuid, stderr)
+            return False
+    return True
+
+
+async def _cascade_archive_devices(
+    user_id: str, scripts_path: str, verbose: bool, send
+) -> bool:
+    """Деактивировать и архивировать все устройства пользователя."""
+    rc, stdout, _ = await run_script(
+        [f"{scripts_path}/devices/list.sh", "--user", user_id],
+        send=send, verbose=verbose,
+    )
+    if rc != 0:
+        return False
+    try:
+        devices = json.loads(stdout)
+    except json.JSONDecodeError:
+        return False
+
+    for device in devices:
+        uuid = device["uuid"]
+        status = device.get("status", "")
+
+        if status == "active":
+            rc, _, stderr = await run_script(
+                [f"{scripts_path}/devices/deactivate.sh", "--uuid", uuid],
+                send=send, verbose=verbose,
+            )
+            if rc != 0:
+                logger.error("devices/deactivate.sh failed for %s: %s", uuid, stderr)
+                return False
+
+        if status != "archived":
+            rc, _, stderr = await run_script(
+                [f"{scripts_path}/devices/update.sh", "--uuid", uuid, "--status", "archived"],
+                send=send, verbose=verbose,
+            )
+            if rc != 0:
+                logger.error("devices/update.sh --status archived failed for %s: %s", uuid, stderr)
+                return False
+    return True
+
+
+async def _refresh_user_card(
+    callback: CallbackQuery,
+    user_id: str,
+    status_filter: str,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    """Перезагрузить и отобразить карточку пользователя."""
+    user = await _fetch_user_by_id(user_id, scripts_path, verbose, callback.message.answer)
+    if not user:
+        await callback.message.edit_text("Пользователь не найден.")
+        return
+    await callback.message.edit_text(
+        _format_user_card(user),
+        reply_markup=_kb_user_card(user, status_filter),
+        parse_mode="HTML",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Helpers для карточки: клавиатура выбора Core-ноды
+# ---------------------------------------------------------------------------
+
+def _kb_core_selection_card(user_id: str, status_filter: str, nodes: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for node in nodes:
+        ip = node["ip"]
+        label = node.get("hostname") or ip
+        location = node.get("location", "")
+        btn_text = f"{label} ({location})" if location else label
+        rows.append([InlineKeyboardButton(
+            text=btn_text,
+            callback_data=f"user:core:{user_id}:{status_filter}:{ip}",
+        )])
+    rows.append([InlineKeyboardButton(
+        text="← Назад",
+        callback_data=f"user:back:{user_id}:{status_filter}",
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+# ---------------------------------------------------------------------------
+# Действия в карточке пользователя
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("user:approve:"))
+async def cb_user_approve(
+    callback: CallbackQuery,
+    role: Role,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    parts = callback.data.split(":")  # user:approve:<id>:<filter>
+    user_id, status_filter = parts[2], parts[3]
+
+    rc, stdout, stderr = await run_script(
+        [f"{scripts_path}/nodes/list-core.sh"],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("nodes/list-core.sh failed: %s", stderr)
+        await callback.answer("Не удалось получить список Core-нод.", show_alert=True)
+        return
+
+    try:
+        nodes = json.loads(stdout)
+    except json.JSONDecodeError:
+        logger.error("nodes/list-core.sh returned invalid JSON: %s", stdout)
+        await callback.answer("Ошибка при получении списка нод.", show_alert=True)
+        return
+
+    if not nodes:
+        await callback.answer("Нет доступных Core-нод.", show_alert=True)
+        return
+
+    user = await _fetch_user_by_id(user_id, scripts_path, verbose, callback.message.answer)
+    username = user["username"] if user else f"ID={user_id}"
+
+    await callback.message.edit_text(
+        f"Выберите Core-ноду для <b>{username}</b>:",
+        reply_markup=_kb_core_selection_card(user_id, status_filter, nodes),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user:core:"))
+async def cb_user_core(
+    callback: CallbackQuery,
+    role: Role,
+    bot: Bot,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    parts = callback.data.split(":", 4)  # user:core:<id>:<filter>:<ip>
+    if len(parts) < 5:
+        await callback.answer("Ошибка формата.", show_alert=True)
+        return
+
+    user_id, status_filter, core_ip = parts[2], parts[3], parts[4]
+
+    user = await _fetch_user_by_id(user_id, scripts_path, verbose, callback.message.answer)
+    if not user:
+        await callback.answer("Пользователь не найден или уже обработан.", show_alert=True)
+        return
+
+    rc, _, stderr = await run_script(
+        [
+            f"{scripts_path}/users/update.sh",
+            "--id", user_id,
+            "--add-core-node", core_ip,
+            "--status", "active",
+        ],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("users/update.sh failed: %s", stderr)
+        await callback.answer("Ошибка при одобрении заявки.", show_alert=True)
+        return
+
+    tg_id = user.get("telegram_id")
+    if tg_id:
+        try:
+            await bot.send_message(
+                tg_id,
+                "Ваша заявка одобрена. Добро пожаловать в Sigil Gate!\n"
+                "Введите /start для начала работы.",
+            )
+        except Exception as e:
+            logger.warning("Failed to notify approved user %s: %s", tg_id, e)
+
+    await _refresh_user_card(callback, user_id, status_filter, scripts_path, verbose)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user:back:"))
+async def cb_user_back(
+    callback: CallbackQuery,
+    role: Role,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    parts = callback.data.split(":")  # user:back:<id>:<filter>
+    user_id, status_filter = parts[2], parts[3]
+
+    await _refresh_user_card(callback, user_id, status_filter, scripts_path, verbose)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user:activate:"))
+async def cb_user_activate(
+    callback: CallbackQuery,
+    role: Role,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    parts = callback.data.split(":")  # user:activate:<id>:<filter>
+    user_id, status_filter = parts[2], parts[3]
+
+    rc, _, stderr = await run_script(
+        [f"{scripts_path}/users/update.sh", "--id", user_id, "--status", "active"],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("users/update.sh failed: %s", stderr)
+        await callback.answer("Ошибка при восстановлении пользователя.", show_alert=True)
+        return
+
+    await _refresh_user_card(callback, user_id, status_filter, scripts_path, verbose)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user:suspend:"))
+async def cb_user_suspend(
+    callback: CallbackQuery,
+    role: Role,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    parts = callback.data.split(":")  # user:suspend:<id>:<filter>
+    user_id, status_filter = parts[2], parts[3]
+
+    ok = await _cascade_deactivate_devices(
+        user_id, scripts_path, verbose, callback.message.answer
+    )
+    if not ok:
+        await callback.answer("Ошибка при деактивации устройств.", show_alert=True)
+        return
+
+    rc, _, stderr = await run_script(
+        [f"{scripts_path}/users/update.sh", "--id", user_id, "--status", "inactive"],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("users/update.sh failed: %s", stderr)
+        await callback.answer("Ошибка при приостановке пользователя.", show_alert=True)
+        return
+
+    await _refresh_user_card(callback, user_id, status_filter, scripts_path, verbose)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user:archive:"))
+async def cb_user_archive(
+    callback: CallbackQuery,
+    role: Role,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    parts = callback.data.split(":")  # user:archive:<id>:<filter>
+    user_id, status_filter = parts[2], parts[3]
+
+    ok = await _cascade_archive_devices(
+        user_id, scripts_path, verbose, callback.message.answer
+    )
+    if not ok:
+        await callback.answer("Ошибка при архивировании устройств.", show_alert=True)
+        return
+
+    rc, _, stderr = await run_script(
+        [f"{scripts_path}/users/update.sh", "--id", user_id, "--status", "archived"],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("users/update.sh failed: %s", stderr)
+        await callback.answer("Ошибка при архивировании пользователя.", show_alert=True)
+        return
+
+    await _refresh_user_card(callback, user_id, status_filter, scripts_path, verbose)
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("user:remove:"))
+async def cb_user_remove(
+    callback: CallbackQuery,
+    role: Role,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role != Role.ADMIN:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    parts = callback.data.split(":")  # user:remove:<id>:<filter>
+    user_id, status_filter = parts[2], parts[3]
+
+    rc, _, stderr = await run_script(
+        [f"{scripts_path}/users/remove.sh", "--id", user_id],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("users/remove.sh failed: %s", stderr)
+        await callback.answer("Ошибка при удалении пользователя.", show_alert=True)
+        return
+
+    users = await _fetch_users(status_filter, scripts_path, verbose, callback.message.answer)
+    if users is None:
+        await callback.message.edit_text("Пользователь удалён.")
+        await callback.answer()
         return
 
     await callback.message.edit_text(
