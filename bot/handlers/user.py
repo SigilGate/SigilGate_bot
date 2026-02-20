@@ -33,6 +33,10 @@ class RenameDeviceStates(StatesGroup):
     waiting_new_name = State()
 
 
+class ActivateDeviceStates(StatesGroup):
+    waiting_entry_node = State()
+
+
 # ---------------------------------------------------------------------------
 # Keyboards
 # ---------------------------------------------------------------------------
@@ -54,6 +58,10 @@ def _kb_add_cancel() -> InlineKeyboardMarkup:
 
 def _kb_device_card(uuid: str, links: list[str], status: str = "") -> InlineKeyboardMarkup:
     rows = []
+    if status == "inactive":
+        rows.append([InlineKeyboardButton(text="▷ Активировать", callback_data=f"mydev:activate:{uuid}")])
+    elif status == "active":
+        rows.append([InlineKeyboardButton(text="⏸ Деактивировать", callback_data=f"mydev:deactivate:{uuid}")])
     if status != "archived":
         rows.append([InlineKeyboardButton(text="✏ Переименовать", callback_data=f"mydev:rename:{uuid}")])
     rows.append([InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"mydev:del:{uuid}")])
@@ -63,6 +71,17 @@ def _kb_device_card(uuid: str, links: list[str], status: str = "") -> InlineKeyb
             InlineKeyboardButton(text=label, copy_text=CopyTextButton(text=link))
         ])
     rows.append([InlineKeyboardButton(text="← Назад", callback_data="mydev:back")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _kb_entry_node_selection(nodes: list[dict]) -> InlineKeyboardMarkup:
+    rows = []
+    for i, node in enumerate(nodes):
+        label = node.get("hostname") or node["ip"]
+        location = node.get("location", "")
+        btn_text = f"{label} ({location})" if location else label
+        rows.append([InlineKeyboardButton(text=btn_text, callback_data=f"mydev:actnode:{i}")])
+    rows.append([InlineKeyboardButton(text="← Назад", callback_data="mydev:actcancel")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -664,6 +683,257 @@ async def cb_rename_cancel(
         reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
         parse_mode="HTML",
     )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Активация устройства — показ списка Entry-нод
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("mydev:activate:"))
+async def cb_device_activate_start(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    state: FSMContext,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    uuid = callback.data.split(":", 2)[2]
+
+    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
+    rc, stdout, _ = await run_script(cmd_get, verbose=False)
+    if rc != 0 or not stdout:
+        await callback.answer("Устройство не найдено.", show_alert=True)
+        return
+
+    try:
+        device = json.loads(stdout)
+    except json.JSONDecodeError:
+        await callback.answer("Ошибка при разборе данных.", show_alert=True)
+        return
+
+    if device.get("user_id") != registry_user["id"]:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    if device.get("status") != "inactive":
+        await callback.answer("Устройство уже активно или архивировано.", show_alert=True)
+        return
+
+    rc, stdout, stderr = await run_script(
+        [f"{scripts_path}/nodes/list-entry.sh", "--user", str(registry_user["id"])],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("nodes/list-entry.sh failed: %s", stderr)
+        await callback.answer("Не удалось получить список Entry-нод.", show_alert=True)
+        return
+
+    try:
+        nodes = json.loads(stdout)
+    except json.JSONDecodeError:
+        logger.error("nodes/list-entry.sh returned invalid JSON: %s", stdout)
+        await callback.answer("Ошибка при получении списка нод.", show_alert=True)
+        return
+
+    if not nodes:
+        await callback.answer("Нет доступных Entry-нод. Обратитесь к администратору.", show_alert=True)
+        return
+
+    await state.set_state(ActivateDeviceStates.waiting_entry_node)
+    await state.update_data(uuid=uuid, device_name=device["device"], nodes=nodes)
+
+    await callback.message.edit_text(
+        f"Выберите Entry-ноду для активации устройства <b>{device['device']}</b>:",
+        reply_markup=_kb_entry_node_selection(nodes),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Активация устройства — выбор Entry-ноды
+# ---------------------------------------------------------------------------
+
+@router.callback_query(ActivateDeviceStates.waiting_entry_node, F.data.startswith("mydev:actnode:"))
+async def cb_device_activate_node(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    state: FSMContext,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await state.clear()
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    index = int(callback.data.split(":")[2])
+    data = await state.get_data()
+    uuid = data["uuid"]
+    device_name = data["device_name"]
+    nodes = data["nodes"]
+
+    if index >= len(nodes):
+        await callback.answer("Ошибка: нода не найдена.", show_alert=True)
+        return
+
+    node = nodes[index]
+    await state.clear()
+
+    rc, _, stderr = await run_script(
+        [
+            f"{scripts_path}/entry/add-client.sh",
+            "--host", node["ip"],
+            "--uuid", uuid,
+            "--service-name", node["service_name"],
+            "--name", device_name,
+        ],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("entry/add-client.sh failed: %s", stderr)
+        await callback.answer("Ошибка при активации устройства на ноде.", show_alert=True)
+        return
+
+    rc, _, stderr = await run_script(
+        [f"{scripts_path}/devices/update.sh", "--uuid", uuid, "--status", "active"],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("devices/update.sh --status active failed: %s", stderr)
+        await callback.answer("Устройство добавлено на ноду, но статус не обновлён.", show_alert=True)
+        return
+
+    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
+    rc, stdout, _ = await run_script(cmd_get, verbose=False)
+    if rc == 0:
+        try:
+            device = json.loads(stdout)
+            links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
+            await callback.message.edit_text(
+                _format_device_card(device, links),
+                reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
+                parse_mode="HTML",
+            )
+        except json.JSONDecodeError:
+            await callback.message.edit_text("Устройство активировано.")
+    else:
+        await callback.message.edit_text("Устройство активировано.")
+
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Активация устройства — отмена
+# ---------------------------------------------------------------------------
+
+@router.callback_query(ActivateDeviceStates.waiting_entry_node, F.data == "mydev:actcancel")
+async def cb_device_activate_cancel(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    state: FSMContext,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    data = await state.get_data()
+    uuid = data.get("uuid", "")
+    await state.clear()
+
+    if not uuid:
+        await callback.message.edit_text("Отменено.")
+        await callback.answer()
+        return
+
+    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
+    rc, stdout, _ = await run_script(cmd_get, verbose=False)
+    if rc != 0:
+        await callback.message.edit_text("Отменено.")
+        await callback.answer()
+        return
+
+    try:
+        device = json.loads(stdout)
+    except json.JSONDecodeError:
+        await callback.message.edit_text("Отменено.")
+        await callback.answer()
+        return
+
+    links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
+    await callback.message.edit_text(
+        _format_device_card(device, links),
+        reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Деактивация устройства
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("mydev:deactivate:"))
+async def cb_device_deactivate(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    uuid = callback.data.split(":", 2)[2]
+
+    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
+    rc, stdout, _ = await run_script(cmd_get, verbose=False)
+    if rc != 0 or not stdout:
+        await callback.answer("Устройство не найдено.", show_alert=True)
+        return
+
+    try:
+        device = json.loads(stdout)
+    except json.JSONDecodeError:
+        await callback.answer("Ошибка при разборе данных.", show_alert=True)
+        return
+
+    if device.get("user_id") != registry_user["id"]:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    rc, _, stderr = await run_script(
+        [f"{scripts_path}/devices/deactivate.sh", "--uuid", uuid],
+        send=callback.message.answer, verbose=verbose,
+    )
+    if rc != 0:
+        logger.error("devices/deactivate.sh failed: %s", stderr)
+        await callback.answer("Ошибка при деактивации устройства.", show_alert=True)
+        return
+
+    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
+    rc, stdout, _ = await run_script(cmd_get, verbose=False)
+    if rc == 0:
+        try:
+            device = json.loads(stdout)
+            links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
+            await callback.message.edit_text(
+                _format_device_card(device, links),
+                reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
+                parse_mode="HTML",
+            )
+        except json.JSONDecodeError:
+            await callback.message.edit_text("Устройство деактивировано.")
+    else:
+        await callback.message.edit_text("Устройство деактивировано.")
+
     await callback.answer()
 
 
