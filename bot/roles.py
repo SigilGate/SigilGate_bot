@@ -1,6 +1,5 @@
 import json
 import logging
-import os
 from enum import Enum
 from pathlib import Path
 
@@ -11,6 +10,26 @@ class Role(str, Enum):
     GUEST = "guest"
     USER = "user"
     ADMIN = "admin"
+
+
+class GuestState(str, Enum):
+    NO_RECORD = "no_record"   # нет записи в реестре
+    PENDING   = "pending"     # inactive + core_nodes=[] (ожидает одобрения)
+    BLOCKED   = "blocked"     # inactive + core_nodes не пустой (заблокирован)
+    ARCHIVED  = "archived"    # archived (постоянный бан)
+
+
+def resolve_guest_state(registry_user: dict | None) -> GuestState:
+    if registry_user is None:
+        return GuestState.NO_RECORD
+    status = registry_user.get("status")
+    if status == "archived":
+        return GuestState.ARCHIVED
+    if status == "inactive":
+        if not registry_user.get("core_nodes"):
+            return GuestState.PENDING
+        return GuestState.BLOCKED
+    return GuestState.NO_RECORD
 
 
 def find_user_by_telegram_id(telegram_id: int, store_path: str) -> dict | None:
@@ -39,7 +58,7 @@ def resolve_role(telegram_id: int, store_path: str, admin_ids: set[int]) -> Role
             for file in users_dir.glob("*.json"):
                 try:
                     data = json.loads(file.read_text())
-                    if data.get("telegram_id") == telegram_id:
+                    if data.get("telegram_id") == telegram_id and data.get("status") == "active":
                         return Role.USER
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning("Failed to read %s: %s", file, e)
