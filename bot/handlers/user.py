@@ -29,6 +29,10 @@ class AddDeviceStates(StatesGroup):
     waiting_name = State()
 
 
+class RenameDeviceStates(StatesGroup):
+    waiting_new_name = State()
+
+
 # ---------------------------------------------------------------------------
 # Keyboards
 # ---------------------------------------------------------------------------
@@ -48,10 +52,11 @@ def _kb_add_cancel() -> InlineKeyboardMarkup:
     ]])
 
 
-def _kb_device_card(uuid: str, links: list[str]) -> InlineKeyboardMarkup:
-    rows = [
-        [InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"mydev:del:{uuid}")]
-    ]
+def _kb_device_card(uuid: str, links: list[str], status: str = "") -> InlineKeyboardMarkup:
+    rows = []
+    if status != "archived":
+        rows.append([InlineKeyboardButton(text="✏ Переименовать", callback_data=f"mydev:rename:{uuid}")])
+    rows.append([InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"mydev:del:{uuid}")])
     for i, link in enumerate(links):
         label = "📋 Скопировать конфигурацию" if len(links) == 1 else f"📋 Конфигурация {i + 1}"
         rows.append([
@@ -59,6 +64,12 @@ def _kb_device_card(uuid: str, links: list[str]) -> InlineKeyboardMarkup:
         ])
     rows.append([InlineKeyboardButton(text="← Назад", callback_data="mydev:back")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _kb_rename_cancel() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="Отмена", callback_data="mydev:rename_cancel"),
+    ]])
 
 
 def _kb_delete_confirm(uuid: str) -> InlineKeyboardMarkup:
@@ -208,7 +219,7 @@ async def cb_device_card(
 
     await callback.message.edit_text(
         _format_device_card(device, links),
-        reply_markup=_kb_device_card(uuid, links),
+        reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -493,7 +504,164 @@ async def cb_device_delete_cancel(
 
     await callback.message.edit_text(
         _format_device_card(device, links),
-        reply_markup=_kb_device_card(uuid, links),
+        reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Переименование устройства — запрос нового имени
+# ---------------------------------------------------------------------------
+
+@router.callback_query(F.data.startswith("mydev:rename:"))
+async def cb_device_rename_start(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    state: FSMContext,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    uuid = callback.data.split(":", 2)[2]
+
+    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
+    rc, stdout, _ = await run_script(cmd_get, verbose=False)
+    if rc != 0 or not stdout:
+        await callback.answer("Устройство не найдено.", show_alert=True)
+        return
+
+    try:
+        device = json.loads(stdout)
+    except json.JSONDecodeError:
+        await callback.answer("Ошибка при разборе данных.", show_alert=True)
+        return
+
+    if device.get("user_id") != registry_user["id"]:
+        await callback.answer("Доступ ограничен.", show_alert=True)
+        return
+
+    await state.set_state(RenameDeviceStates.waiting_new_name)
+    await state.update_data(uuid=uuid)
+
+    await callback.message.edit_text(
+        f"Введите новое название для устройства <b>{device['device']}</b>:",
+        reply_markup=_kb_rename_cancel(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+# ---------------------------------------------------------------------------
+# Переименование устройства — получение нового имени
+# ---------------------------------------------------------------------------
+
+@router.message(RenameDeviceStates.waiting_new_name)
+async def rename_device_name(
+    message: Message,
+    role: Role,
+    registry_user: dict | None,
+    state: FSMContext,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
+        await state.clear()
+        await message.answer("Доступ ограничен.")
+        return
+
+    new_name = (message.text or "").strip()
+
+    if not new_name:
+        await message.answer(
+            "Название не может быть пустым. Попробуйте ещё раз:",
+            reply_markup=_kb_rename_cancel(),
+        )
+        return
+
+    if len(new_name) > 64:
+        await message.answer(
+            "Название слишком длинное (максимум 64 символа). Попробуйте ещё раз:",
+            reply_markup=_kb_rename_cancel(),
+        )
+        return
+
+    data = await state.get_data()
+    uuid = data["uuid"]
+    await state.clear()
+
+    cmd = [f"{scripts_path}/devices/update.sh", "--uuid", uuid, "--device", new_name]
+    rc, _, stderr = await run_script(cmd, send=message.answer, verbose=verbose)
+
+    if rc != 0:
+        logger.error("devices/update.sh failed: %s", stderr)
+        await message.answer("Не удалось переименовать устройство. Попробуйте позже.")
+        return
+
+    await message.answer(
+        f"Устройство переименовано в <b>{new_name}</b>.",
+        parse_mode="HTML",
+    )
+
+    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
+    rc, stdout, _ = await run_script(cmd_get, verbose=False)
+    if rc == 0:
+        try:
+            device = json.loads(stdout)
+            links = await _fetch_config(uuid, scripts_path, verbose, message.answer)
+            await message.answer(
+                _format_device_card(device, links),
+                reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
+                parse_mode="HTML",
+            )
+        except json.JSONDecodeError:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Переименование устройства — отмена
+# ---------------------------------------------------------------------------
+
+@router.callback_query(StateFilter(RenameDeviceStates), F.data == "mydev:rename_cancel")
+async def cb_rename_cancel(
+    callback: CallbackQuery,
+    role: Role,
+    registry_user: dict | None,
+    state: FSMContext,
+    scripts_path: str,
+    verbose: bool,
+) -> None:
+    data = await state.get_data()
+    uuid = data.get("uuid", "")
+    await state.clear()
+
+    if not uuid:
+        await callback.message.edit_text("Отменено.")
+        await callback.answer()
+        return
+
+    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
+    rc, stdout, _ = await run_script(cmd_get, verbose=False)
+    if rc != 0:
+        await callback.message.edit_text("Отменено.")
+        await callback.answer()
+        return
+
+    try:
+        device = json.loads(stdout)
+    except json.JSONDecodeError:
+        await callback.message.edit_text("Отменено.")
+        await callback.answer()
+        return
+
+    links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
+    await callback.message.edit_text(
+        _format_device_card(device, links),
+        reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
         parse_mode="HTML",
     )
     await callback.answer()
