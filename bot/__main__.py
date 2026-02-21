@@ -6,7 +6,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import load_config
 from bot.handlers import admin, guest, start, user
-from bot.handlers import reg
+from bot.handlers import reg, trial
 from bot.middlewares.auth import AuthMiddleware
 
 logging.basicConfig(
@@ -36,6 +36,7 @@ async def main() -> None:
     dp.include_router(reg.router)
     dp.include_router(admin.router)
     dp.include_router(user.router)
+    dp.include_router(trial.router)
     dp.include_router(guest.router)
 
     logger.info("Bot starting (v0.1.0)...")

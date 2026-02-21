@@ -136,6 +136,42 @@ async def _fetch_users(
 
 
 # ---------------------------------------------------------------------------
+# Trial cleanup helper
+# ---------------------------------------------------------------------------
+
+async def _cleanup_trial_devices(
+    telegram_id: int,
+    scripts_path: str,
+    verbose: bool,
+    send,
+) -> None:
+    """Удаляет все триал-устройства пользователя после одобрения регистрации."""
+    rc, stdout, stderr = await run_script(
+        [f"{scripts_path}/trial/find.sh", "--telegram-id", str(telegram_id)],
+    )
+    if rc != 0:
+        logger.warning("trial/find.sh failed for tg_id=%s: %s", telegram_id, stderr)
+        return
+
+    try:
+        devices = json.loads(stdout)
+    except json.JSONDecodeError:
+        logger.warning("trial/find.sh returned invalid JSON for tg_id=%s: %s", telegram_id, stdout)
+        return
+
+    for dev in devices:
+        uuid = dev.get("uuid")
+        if not uuid:
+            continue
+        rc, _, stderr = await run_script(
+            [f"{scripts_path}/devices/remove.sh", "--uuid", uuid],
+            send=send, verbose=verbose,
+        )
+        if rc != 0:
+            logger.warning("devices/remove.sh failed for trial uuid=%s: %s", uuid, stderr)
+
+
+# ---------------------------------------------------------------------------
 # /users
 # ---------------------------------------------------------------------------
 
@@ -472,6 +508,9 @@ async def cb_user_core(
         except Exception as e:
             logger.warning("Failed to notify approved user %s: %s", tg_id, e)
 
+        # Удаляем триал-устройства одобренного пользователя
+        await _cleanup_trial_devices(tg_id, scripts_path, verbose, callback.message.answer)
+
     await _refresh_user_card(callback, user_id, status_filter, scripts_path, verbose)
     await callback.answer()
 
@@ -783,6 +822,9 @@ async def cb_reg_core(
             )
         except Exception as e:
             logger.warning("Failed to notify approved user %s: %s", tg_id, e)
+
+        # Удаляем триал-устройства одобренного пользователя
+        await _cleanup_trial_devices(tg_id, scripts_path, verbose, callback.message.answer)
 
     await callback.answer()
 
