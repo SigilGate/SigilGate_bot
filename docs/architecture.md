@@ -27,6 +27,7 @@ SigilGate_bot/
 │   ├── handlers/
 │   │   ├── start.py         # /start — приветствие по роли
 │   │   ├── reg.py           # /reg — FSM регистрации (GUEST)
+│   │   ├── trial.py         # /trial — триал-доступ (GUEST, ADMIN)
 │   │   ├── user.py          # /devices и управление устройствами (USER, ADMIN)
 │   │   ├── admin.py         # /users и управление пользователями (ADMIN)
 │   │   └── guest.py         # fallback для GUEST
