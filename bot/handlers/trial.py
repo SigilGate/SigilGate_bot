@@ -1,13 +1,22 @@
 import asyncio
+import io
 import json
 import logging
 import re
 import time
 from pathlib import Path
 
+import qrcode
 from aiogram import Router
+from aiogram.enums import ChatAction
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import (
+    BufferedInputFile,
+    CopyTextButton,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from bot.roles import Role
 from bot.runner import run_script
@@ -38,6 +47,41 @@ def _get_device_mtime(store_path: str, uuid: str) -> float | None:
         return None
 
 
+def _make_qr_photo(link: str) -> BufferedInputFile | None:
+    """Генерирует QR-код для VLESS-ссылки. Возвращает BufferedInputFile или None при ошибке."""
+    try:
+        img = qrcode.make(link)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return BufferedInputFile(buf.read(), filename="qr.png")
+    except Exception:
+        logger.exception("Failed to generate QR code")
+        return None
+
+
+def _make_result_keyboard(link: str) -> InlineKeyboardMarkup:
+    """Клавиатура с кнопкой копирования VLESS-ссылки."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="📋 Скопировать ссылку", copy_text=CopyTextButton(text=link))]
+        ]
+    )
+
+
+def _result_text(link: str, remaining: int) -> str:
+    """Формирует текст результата с приветствием, ссылкой и счётчиком лимита."""
+    return (
+        "🌐 Сеть <b>Sigil Gate</b> — доступ открыт\n"
+        "Добро пожаловать!\n"
+        "\n"
+        f"Ссылка действует <b>1 час</b>.\n"
+        f"Лимит подключений: <b>{remaining}</b>\n"
+        "\n"
+        f"<code>{link}</code>"
+    )
+
+
 @router.message(Command("trial"))
 async def cmd_trial(
     message: Message,
@@ -55,6 +99,9 @@ async def cmd_trial(
         )
         return
 
+    processing_msg = await message.answer("⏳ Ваш запрос на подключение обрабатывается...")
+    await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
+
     telegram_id = message.from_user.id
 
     # --- Шаг 1: получаем все триал-устройства пользователя ---
@@ -64,7 +111,9 @@ async def cmd_trial(
     )
     if rc != 0:
         logger.error("trial/find.sh failed: %s", stderr)
-        await message.answer("Не удалось проверить статус пробного доступа. Попробуйте позже.")
+        await processing_msg.edit_text(
+            "Не удалось проверить статус пробного доступа. Попробуйте позже."
+        )
         return
 
     try:
@@ -97,7 +146,7 @@ async def cmd_trial(
     if digits:
         min_digit = min(digits)
         if min_digit == 0:
-            await message.answer(
+            await processing_msg.edit_text(
                 "<b>Лимит пробных подключений исчерпан.</b>\n\n"
                 "Вы использовали все доступные пробные подключения.\n"
                 "Для получения постоянного доступа пройдите регистрацию: /reg",
@@ -124,7 +173,9 @@ async def cmd_trial(
     )
     if rc != 0:
         logger.error("devices/add.sh failed for trial device %s: %s", device_name, stderr)
-        await message.answer("Не удалось создать пробное подключение. Попробуйте позже.")
+        await processing_msg.edit_text(
+            "Не удалось создать пробное подключение. Попробуйте позже."
+        )
         return
 
     # --- Шаг 5: извлекаем UUID из вывода ---
@@ -132,7 +183,9 @@ async def cmd_trial(
     uuid_match = _UUID_RE.search(stdout)
     if not uuid_match:
         logger.error("Could not extract UUID from devices/add.sh output: %s", stdout)
-        await message.answer("Не удалось получить параметры подключения. Обратитесь к администратору.")
+        await processing_msg.edit_text(
+            "Не удалось получить параметры подключения. Обратитесь к администратору."
+        )
         return
 
     uuid = uuid_match.group(0)
@@ -144,7 +197,9 @@ async def cmd_trial(
     )
     if rc != 0:
         logger.error("devices/config.sh failed for uuid %s: %s", uuid, stderr)
-        await message.answer("Подключение создано, но не удалось сформировать ссылку. Обратитесь к администратору.")
+        await processing_msg.edit_text(
+            "Подключение создано, но не удалось сформировать ссылку. Обратитесь к администратору."
+        )
         return
 
     try:
@@ -154,34 +209,24 @@ async def cmd_trial(
         links = []
 
     if not links:
-        await message.answer("Подключение создано, но маршрут не найден. Обратитесь к администратору.")
+        await processing_msg.edit_text(
+            "Подключение создано, но маршрут не найден. Обратитесь к администратору."
+        )
         return
 
-    # --- Шаг 7: отправляем ссылку пользователю ---
+    # --- Шаг 7: отправляем результат ---
 
+    link = links[0]
     remaining_after = new_digit  # сколько попыток останется после этой
 
-    lines = [
-        "<b>Пробное подключение Sigil Gate</b>",
-        "",
-        f"Ссылка действует <b>1 час</b>.",
-        f"Осталось попыток после этого: <b>{remaining_after}</b>",
-        "",
-    ]
+    await processing_msg.delete()
 
-    for link in links:
-        lines.append(f"<code>{link}</code>")
+    qr_photo = _make_qr_photo(link)
+    if qr_photo:
+        await message.answer_photo(qr_photo)
 
-    if new_digit > 0:
-        lines += [
-            "",
-            "<i>Для получения постоянного доступа: /reg</i>",
-        ]
-    else:
-        lines += [
-            "",
-            "<i>Это ваше последнее пробное подключение.</i>",
-            "<i>Для продолжения пройдите регистрацию: /reg</i>",
-        ]
-
-    await message.answer("\n".join(lines), parse_mode="HTML")
+    await message.answer(
+        _result_text(link, remaining_after),
+        parse_mode="HTML",
+        reply_markup=_make_result_keyboard(link),
+    )
