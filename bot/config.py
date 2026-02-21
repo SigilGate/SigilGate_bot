@@ -4,7 +4,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-
 def load_config() -> dict:
     token = os.environ.get("SIGILGATE_BOT_TOKEN", "")
     if not token:
