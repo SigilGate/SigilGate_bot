@@ -7,7 +7,7 @@ from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.enums import ChatAction
-from aiogram.filters import Command
+from aiogram.filters import Command, or_f
 from aiogram.types import (
     CopyTextButton,
     InlineKeyboardButton,
@@ -68,7 +68,7 @@ def _result_text(link: str, remaining: int) -> str:
     )
 
 
-@router.message(Command("trial") | (F.text == "🚀 Пробный доступ (без регистрации)"))
+@router.message(or_f(Command("trial"), F.text == "🚀 Пробный доступ (без регистрации)"))
 async def cmd_trial(
     message: Message,
     role: Role,

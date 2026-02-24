@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 from aiogram import Bot, F, Router
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command, StateFilter, or_f
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -87,7 +87,7 @@ def _confirm_text(username: str, email: str | None) -> str:
 # /reg — точка входа
 # ---------------------------------------------------------------------------
 
-@router.message((Command("reg") | (F.text == "📝 Зарегистрироваться")), StateFilter(None))
+@router.message(or_f(Command("reg"), F.text == "📝 Зарегистрироваться"), StateFilter(None))
 async def cmd_reg(message: Message, state: FSMContext, role: Role) -> None:
     if role != Role.GUEST:
         await message.answer("Вы уже зарегистрированы в системе.")
