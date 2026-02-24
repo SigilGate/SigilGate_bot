@@ -340,28 +340,6 @@ async def cb_add_device_start(
     await callback.answer()
 
 
-@router.message(Command("add_device"))
-async def cmd_add_device(
-    message: Message,
-    role: Role,
-    registry_user: dict | None,
-    state: FSMContext,
-) -> None:
-    if role not in (Role.USER, Role.ADMIN):
-        await message.answer("Доступ ограничен.")
-        return
-
-    if registry_user is None:
-        await message.answer("Ваш аккаунт не найден в реестре.")
-        return
-
-    await state.set_state(AddDeviceStates.waiting_name)
-    await message.answer(
-        "Введите название нового устройства:",
-        reply_markup=_kb_add_cancel(),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Добавление устройства — получение имени и запуск скрипта
 # ---------------------------------------------------------------------------
