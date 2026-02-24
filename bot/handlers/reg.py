@@ -87,7 +87,7 @@ def _confirm_text(username: str, email: str | None) -> str:
 # /reg — точка входа
 # ---------------------------------------------------------------------------
 
-@router.message(Command("reg"), StateFilter(None))
+@router.message((Command("reg") | (F.text == "📝 Зарегистрироваться")), StateFilter(None))
 async def cmd_reg(message: Message, state: FSMContext, role: Role) -> None:
     if role != Role.GUEST:
         await message.answer("Вы уже зарегистрированы в системе.")

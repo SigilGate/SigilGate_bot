@@ -929,15 +929,3 @@ async def cb_reg_back(
         parse_mode="HTML",
     )
     await callback.answer()
-
-
-# ---------------------------------------------------------------------------
-# /status — заглушка
-# ---------------------------------------------------------------------------
-
-@router.message(Command("status"))
-async def cmd_status(message: Message, role: Role) -> None:
-    if role == Role.ADMIN:
-        await message.answer("Здесь будет статус сети.")
-    else:
-        await message.answer("Доступ ограничен.")

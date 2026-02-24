@@ -1,6 +1,6 @@
 from aiogram import Router
 from aiogram.filters import CommandStart
-from aiogram.types import Message
+from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 
 from bot.roles import GuestState, Role, resolve_guest_state
 
@@ -16,24 +16,22 @@ COMMANDS_USER = (
 COMMANDS_ADMIN = (
     "Команды администратора:\n"
     "/users — управление пользователями\n"
-    "/status — статус сети\n"
     "\n"
     "Команды пользователя:\n"
     "/devices — список устройств\n"
     "/add_device — добавить устройство"
 )
 
-COMMANDS_GUEST = (
-    "Доступные команды:\n"
-    "/start — информация о боте\n"
-    "/reg — подать заявку на подключение"
+GUEST_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🚀 Пробный доступ (без регистрации)")],
+        [KeyboardButton(text="📝 Зарегистрироваться")],
+    ],
+    resize_keyboard=True,
 )
 
 GUEST_MESSAGES = {
-    GuestState.NO_RECORD: (
-        "Добро пожаловать в Sigil Gate!\n\n"
-        + COMMANDS_GUEST
-    ),
+    GuestState.NO_RECORD: "Добро пожаловать в Sigil Gate!",
     GuestState.PENDING: (
         "Ваша заявка принята и рассматривается администратором.\n"
         "Обратитесь к администратору для получения доступа."
@@ -58,4 +56,7 @@ async def cmd_start(message: Message, role: Role, registry_user: dict | None) ->
         await message.answer(f"Добро пожаловать, {name}!\n\n{COMMANDS_USER}")
     else:
         state = resolve_guest_state(registry_user)
-        await message.answer(GUEST_MESSAGES[state])
+        if state == GuestState.NO_RECORD:
+            await message.answer(GUEST_MESSAGES[state], reply_markup=GUEST_KEYBOARD)
+        else:
+            await message.answer(GUEST_MESSAGES[state])

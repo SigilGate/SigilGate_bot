@@ -935,15 +935,3 @@ async def cb_device_deactivate(
         await callback.message.edit_text("Устройство деактивировано.")
 
     await callback.answer()
-
-
-# ---------------------------------------------------------------------------
-# /remove_device — заглушка
-# ---------------------------------------------------------------------------
-
-@router.message(Command("remove_device"))
-async def cmd_remove_device(message: Message, role: Role) -> None:
-    if role in (Role.USER, Role.ADMIN):
-        await message.answer("Здесь будет удаление устройства.")
-    else:
-        await message.answer("Доступ ограничен.")
