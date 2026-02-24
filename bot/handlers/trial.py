@@ -61,7 +61,7 @@ def _result_text(link: str, remaining: int) -> str:
         "🌐 Сеть <b>Sigil Gate</b> — доступ открыт\n"
         "Добро пожаловать!\n"
         "\n"
-        f"Ссылка действует <b>1 час</b>.\n"
+        f"Ссылка действует: <b>1 час</b>\n"
         f"Лимит подключений: <b>{remaining}</b>\n"
         "\n"
         f"<code>{link}</code>"
