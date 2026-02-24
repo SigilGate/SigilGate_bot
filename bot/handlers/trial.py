@@ -223,10 +223,15 @@ async def cmd_trial(
 
     qr_photo = _make_qr_photo(link)
     if qr_photo:
-        await message.answer_photo(qr_photo)
-
-    await message.answer(
-        _result_text(link, remaining_after),
-        parse_mode="HTML",
-        reply_markup=_make_result_keyboard(link),
-    )
+        await message.answer_photo(
+            qr_photo,
+            caption=_result_text(link, remaining_after),
+            parse_mode="HTML",
+            reply_markup=_make_result_keyboard(link),
+        )
+    else:
+        await message.answer(
+            _result_text(link, remaining_after),
+            parse_mode="HTML",
+            reply_markup=_make_result_keyboard(link),
+        )

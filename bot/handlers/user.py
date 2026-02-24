@@ -1,15 +1,20 @@
+import io
 import json
 import logging
 
+import qrcode
+from PIL import Image
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     CopyTextButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
     Message,
 )
 
@@ -130,6 +135,60 @@ def _format_device_card(device: dict, links: list[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Photo helpers
+# ---------------------------------------------------------------------------
+
+def _make_qr_photo(link: str) -> BufferedInputFile | None:
+    """Генерирует QR-код для VLESS-ссылки. Возвращает None при ошибке."""
+    try:
+        img = qrcode.make(link)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        buf.seek(0)
+        return BufferedInputFile(buf.read(), filename="qr.png")
+    except Exception:
+        logger.exception("Failed to generate QR code")
+        return None
+
+
+def _make_placeholder_photo() -> BufferedInputFile:
+    """Заглушка для карточек без активного подключения."""
+    img = Image.new("RGB", (200, 200), color=(20, 20, 35))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return BufferedInputFile(buf.read(), filename="card.png")
+
+
+def _make_card_photo(links: list[str]) -> BufferedInputFile:
+    """QR-код для активного устройства, заглушка — для неактивного."""
+    if links:
+        qr = _make_qr_photo(links[0])
+        if qr:
+            return qr
+    return _make_placeholder_photo()
+
+
+async def _send_device_card(target: Message, device: dict, links: list[str]) -> None:
+    """Отправляет новое фото-сообщение с карточкой устройства."""
+    text = _format_device_card(device, links)
+    kb = _kb_device_card(device["uuid"], links, device.get("status", ""))
+    photo = _make_card_photo(links)
+    await target.answer_photo(photo, caption=text, reply_markup=kb, parse_mode="HTML")
+
+
+async def _edit_device_card(callback: CallbackQuery, device: dict, links: list[str]) -> None:
+    """Обновляет текущее фото-сообщение карточкой устройства (edit_media)."""
+    text = _format_device_card(device, links)
+    kb = _kb_device_card(device["uuid"], links, device.get("status", ""))
+    photo = _make_card_photo(links)
+    await callback.message.edit_media(
+        InputMediaPhoto(media=photo, caption=text, parse_mode="HTML"),
+        reply_markup=kb,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Script helpers
 # ---------------------------------------------------------------------------
 
@@ -236,11 +295,8 @@ async def cb_device_card(
 
     links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
 
-    await callback.message.edit_text(
-        _format_device_card(device, links),
-        reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
-        parse_mode="HTML",
-    )
+    await callback.message.delete()
+    await _send_device_card(callback.message, device, links)
     await callback.answer()
 
 
@@ -265,7 +321,8 @@ async def cb_devices_back(
         await callback.answer("Ошибка при получении списка.", show_alert=True)
         return
 
-    await callback.message.edit_text(
+    await callback.message.delete()
+    await callback.message.answer(
         _list_text(devices),
         reply_markup=_kb_devices_list(devices),
     )
@@ -442,7 +499,7 @@ async def cb_device_delete(
         await callback.answer("Доступ ограничен.", show_alert=True)
         return
 
-    await callback.message.edit_text(
+    await callback.message.edit_caption(
         f"Удалить устройство <b>{device['device']}</b>?\n\nЭто действие необратимо.",
         reply_markup=_kb_delete_confirm(uuid),
         parse_mode="HTML",
@@ -473,18 +530,19 @@ async def cb_device_delete_confirm(
 
     if rc != 0:
         logger.error("devices/remove.sh failed: %s", stderr)
-        await callback.message.edit_text("Не удалось удалить устройство. Попробуйте позже.")
+        await callback.message.edit_caption("Не удалось удалить устройство. Попробуйте позже.")
         await callback.answer()
         return
 
     devices = await _fetch_devices(registry_user["id"], scripts_path, verbose, callback.message.answer)
+    await callback.message.delete()
     if devices is not None:
-        await callback.message.edit_text(
+        await callback.message.answer(
             _list_text(devices),
             reply_markup=_kb_devices_list(devices),
         )
     else:
-        await callback.message.edit_text("Устройство удалено.")
+        await callback.message.answer("Устройство удалено.")
 
     await callback.answer()
 
@@ -521,11 +579,7 @@ async def cb_device_delete_cancel(
 
     links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
 
-    await callback.message.edit_text(
-        _format_device_card(device, links),
-        reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
-        parse_mode="HTML",
-    )
+    await _edit_device_card(callback, device, links)
     await callback.answer()
 
 
@@ -565,9 +619,13 @@ async def cb_device_rename_start(
         return
 
     await state.set_state(RenameDeviceStates.waiting_new_name)
-    await state.update_data(uuid=uuid)
+    await state.update_data(
+        uuid=uuid,
+        chat_id=callback.message.chat.id,
+        message_id=callback.message.message_id,
+    )
 
-    await callback.message.edit_text(
+    await callback.message.edit_caption(
         f"Введите новое название для устройства <b>{device['device']}</b>:",
         reply_markup=_kb_rename_cancel(),
         parse_mode="HTML",
@@ -611,34 +669,50 @@ async def rename_device_name(
 
     data = await state.get_data()
     uuid = data["uuid"]
+    chat_id = data.get("chat_id")
+    message_id = data.get("message_id")
     await state.clear()
 
     cmd = [f"{scripts_path}/devices/update.sh", "--uuid", uuid, "--device", new_name]
-    rc, _, stderr = await run_script(cmd, send=message.answer, verbose=verbose)
+    rc, _, stderr = await run_script(cmd, send=message.answer if verbose else None, verbose=verbose)
+
+    await message.delete()
 
     if rc != 0:
         logger.error("devices/update.sh failed: %s", stderr)
         await message.answer("Не удалось переименовать устройство. Попробуйте позже.")
         return
 
-    await message.answer(
-        f"Устройство переименовано в <b>{new_name}</b>.",
-        parse_mode="HTML",
-    )
-
     cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
     rc, stdout, _ = await run_script(cmd_get, verbose=False)
-    if rc == 0:
+    if rc != 0:
+        await message.answer(f"Устройство переименовано в <b>{new_name}</b>.", parse_mode="HTML")
+        return
+
+    try:
+        device = json.loads(stdout)
+    except json.JSONDecodeError:
+        await message.answer(f"Устройство переименовано в <b>{new_name}</b>.", parse_mode="HTML")
+        return
+
+    links = await _fetch_config(uuid, scripts_path, verbose, message.answer)
+
+    if chat_id and message_id:
         try:
-            device = json.loads(stdout)
-            links = await _fetch_config(uuid, scripts_path, verbose, message.answer)
-            await message.answer(
-                _format_device_card(device, links),
-                reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
-                parse_mode="HTML",
+            photo = _make_card_photo(links)
+            text = _format_device_card(device, links)
+            kb = _kb_device_card(uuid, links, device.get("status", ""))
+            await message.bot.edit_message_media(
+                chat_id=chat_id,
+                message_id=message_id,
+                media=InputMediaPhoto(media=photo, caption=text, parse_mode="HTML"),
+                reply_markup=kb,
             )
-        except json.JSONDecodeError:
-            pass
+        except Exception:
+            logger.exception("Failed to edit card message after rename")
+            await _send_device_card(message, device, links)
+    else:
+        await _send_device_card(message, device, links)
 
 
 # ---------------------------------------------------------------------------
@@ -659,30 +733,26 @@ async def cb_rename_cancel(
     await state.clear()
 
     if not uuid:
-        await callback.message.edit_text("Отменено.")
+        await callback.message.edit_caption("Отменено.")
         await callback.answer()
         return
 
     cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
     rc, stdout, _ = await run_script(cmd_get, verbose=False)
     if rc != 0:
-        await callback.message.edit_text("Отменено.")
+        await callback.message.edit_caption("Отменено.")
         await callback.answer()
         return
 
     try:
         device = json.loads(stdout)
     except json.JSONDecodeError:
-        await callback.message.edit_text("Отменено.")
+        await callback.message.edit_caption("Отменено.")
         await callback.answer()
         return
 
     links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
-    await callback.message.edit_text(
-        _format_device_card(device, links),
-        reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
-        parse_mode="HTML",
-    )
+    await _edit_device_card(callback, device, links)
     await callback.answer()
 
 
@@ -748,7 +818,7 @@ async def cb_device_activate_start(
     await state.set_state(ActivateDeviceStates.waiting_entry_node)
     await state.update_data(uuid=uuid, device_name=device["device"], nodes=nodes)
 
-    await callback.message.edit_text(
+    await callback.message.edit_caption(
         f"Выберите Entry-ноду для активации устройства <b>{device['device']}</b>:",
         reply_markup=_kb_entry_node_selection(nodes),
         parse_mode="HTML",
@@ -817,15 +887,11 @@ async def cb_device_activate_node(
         try:
             device = json.loads(stdout)
             links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
-            await callback.message.edit_text(
-                _format_device_card(device, links),
-                reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
-                parse_mode="HTML",
-            )
+            await _edit_device_card(callback, device, links)
         except json.JSONDecodeError:
-            await callback.message.edit_text("Устройство активировано.")
+            await callback.message.edit_caption("Устройство активировано.")
     else:
-        await callback.message.edit_text("Устройство активировано.")
+        await callback.message.edit_caption("Устройство активировано.")
 
     await callback.answer()
 
@@ -848,30 +914,26 @@ async def cb_device_activate_cancel(
     await state.clear()
 
     if not uuid:
-        await callback.message.edit_text("Отменено.")
+        await callback.message.edit_caption("Отменено.")
         await callback.answer()
         return
 
     cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
     rc, stdout, _ = await run_script(cmd_get, verbose=False)
     if rc != 0:
-        await callback.message.edit_text("Отменено.")
+        await callback.message.edit_caption("Отменено.")
         await callback.answer()
         return
 
     try:
         device = json.loads(stdout)
     except json.JSONDecodeError:
-        await callback.message.edit_text("Отменено.")
+        await callback.message.edit_caption("Отменено.")
         await callback.answer()
         return
 
     links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
-    await callback.message.edit_text(
-        _format_device_card(device, links),
-        reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
-        parse_mode="HTML",
-    )
+    await _edit_device_card(callback, device, links)
     await callback.answer()
 
 
@@ -924,14 +986,10 @@ async def cb_device_deactivate(
         try:
             device = json.loads(stdout)
             links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
-            await callback.message.edit_text(
-                _format_device_card(device, links),
-                reply_markup=_kb_device_card(uuid, links, device.get("status", "")),
-                parse_mode="HTML",
-            )
+            await _edit_device_card(callback, device, links)
         except json.JSONDecodeError:
-            await callback.message.edit_text("Устройство деактивировано.")
+            await callback.message.edit_caption("Устройство деактивировано.")
     else:
-        await callback.message.edit_text("Устройство деактивировано.")
+        await callback.message.edit_caption("Устройство деактивировано.")
 
     await callback.answer()
