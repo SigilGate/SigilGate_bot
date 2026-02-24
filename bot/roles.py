@@ -46,21 +46,3 @@ def find_user_by_telegram_id(telegram_id: int, store_path: str) -> dict | None:
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to read %s: %s", file, e)
     return None
-
-
-def resolve_role(telegram_id: int, store_path: str, admin_ids: set[int]) -> Role:
-    if telegram_id in admin_ids:
-        return Role.ADMIN
-
-    if store_path:
-        users_dir = Path(store_path) / "users"
-        if users_dir.is_dir():
-            for file in users_dir.glob("*.json"):
-                try:
-                    data = json.loads(file.read_text())
-                    if data.get("telegram_id") == telegram_id and data.get("status") == "active":
-                        return Role.USER
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.warning("Failed to read %s: %s", file, e)
-
-    return Role.GUEST

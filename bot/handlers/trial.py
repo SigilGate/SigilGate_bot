@@ -1,23 +1,21 @@
 import asyncio
-import io
 import json
 import logging
 import re
 import time
 from pathlib import Path
 
-import qrcode
 from aiogram import F, Router
 from aiogram.enums import ChatAction
 from aiogram.filters import Command
 from aiogram.types import (
-    BufferedInputFile,
     CopyTextButton,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
 )
 
+from bot.qr import make_qr_photo
 from bot.roles import Role
 from bot.runner import run_script
 
@@ -46,18 +44,6 @@ def _get_device_mtime(store_path: str, uuid: str) -> float | None:
     except OSError:
         return None
 
-
-def _make_qr_photo(link: str) -> BufferedInputFile | None:
-    """Генерирует QR-код для VLESS-ссылки. Возвращает BufferedInputFile или None при ошибке."""
-    try:
-        img = qrcode.make(link)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        return BufferedInputFile(buf.read(), filename="qr.png")
-    except Exception:
-        logger.exception("Failed to generate QR code")
-        return None
 
 
 def _make_result_keyboard(link: str) -> InlineKeyboardMarkup:
@@ -221,7 +207,7 @@ async def cmd_trial(
 
     await processing_msg.delete()
 
-    qr_photo = _make_qr_photo(link)
+    qr_photo = make_qr_photo(link)
     if qr_photo:
         await message.answer_photo(
             qr_photo,

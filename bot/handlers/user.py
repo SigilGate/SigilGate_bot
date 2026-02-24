@@ -2,7 +2,6 @@ import io
 import json
 import logging
 
-import qrcode
 from PIL import Image
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
@@ -18,6 +17,7 @@ from aiogram.types import (
     Message,
 )
 
+from bot.qr import make_qr_photo
 from bot.roles import Role
 from bot.runner import run_script
 
@@ -138,18 +138,6 @@ def _format_device_card(device: dict, links: list[str]) -> str:
 # Photo helpers
 # ---------------------------------------------------------------------------
 
-def _make_qr_photo(link: str) -> BufferedInputFile | None:
-    """Генерирует QR-код для VLESS-ссылки. Возвращает None при ошибке."""
-    try:
-        img = qrcode.make(link)
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        buf.seek(0)
-        return BufferedInputFile(buf.read(), filename="qr.png")
-    except Exception:
-        logger.exception("Failed to generate QR code")
-        return None
-
 
 def _make_placeholder_photo() -> BufferedInputFile:
     """Заглушка для карточек без активного подключения."""
@@ -163,7 +151,7 @@ def _make_placeholder_photo() -> BufferedInputFile:
 def _make_card_photo(links: list[str]) -> BufferedInputFile:
     """QR-код для активного устройства, заглушка — для неактивного."""
     if links:
-        qr = _make_qr_photo(links[0])
+        qr = make_qr_photo(links[0])
         if qr:
             return qr
     return _make_placeholder_photo()
