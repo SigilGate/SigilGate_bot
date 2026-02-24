@@ -9,8 +9,7 @@ router = Router()
 
 COMMANDS_USER = (
     "Доступные команды:\n"
-    "/devices — список устройств\n"
-    "/add_device — добавить устройство"
+    "/devices — список устройств"
 )
 
 COMMANDS_ADMIN = (
@@ -18,8 +17,7 @@ COMMANDS_ADMIN = (
     "/users — управление пользователями\n"
     "\n"
     "Команды пользователя:\n"
-    "/devices — список устройств\n"
-    "/add_device — добавить устройство"
+    "/devices — список устройств"
 )
 
 GUEST_KEYBOARD = ReplyKeyboardMarkup(
