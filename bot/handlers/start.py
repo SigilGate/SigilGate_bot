@@ -6,18 +6,27 @@ from bot.roles import GuestState, Role, resolve_guest_state
 
 router = Router()
 
+# Тексты кнопок — используются также как фильтры в других хендлерах
+BTN_DEVICES  = "📱 Устройства"
+BTN_APPEALS  = "📋 Обращения"
+BTN_SUPPORT  = "✍ Написать администратору"
+BTN_USERS    = "👥 Пользователи"
+BTN_SEND     = "📨 Отправить сообщение"
 
-COMMANDS_USER = (
-    "Доступные команды:\n"
-    "/devices — список устройств"
+USER_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=BTN_DEVICES), KeyboardButton(text=BTN_APPEALS)],
+        [KeyboardButton(text=BTN_SUPPORT)],
+    ],
+    resize_keyboard=True,
 )
 
-COMMANDS_ADMIN = (
-    "Команды администратора:\n"
-    "/users — управление пользователями\n"
-    "\n"
-    "Команды пользователя:\n"
-    "/devices — список устройств"
+ADMIN_KEYBOARD = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text=BTN_USERS), KeyboardButton(text=BTN_APPEALS)],
+        [KeyboardButton(text=BTN_SEND)],
+    ],
+    resize_keyboard=True,
 )
 
 GUEST_KEYBOARD = ReplyKeyboardMarkup(
@@ -48,10 +57,16 @@ GUEST_MESSAGES = {
 @router.message(CommandStart())
 async def cmd_start(message: Message, role: Role, registry_user: dict | None) -> None:
     if role == Role.ADMIN:
-        await message.answer(f"Sigil Gate — панель администратора.\n\n{COMMANDS_ADMIN}")
+        await message.answer(
+            "Sigil Gate — панель администратора.",
+            reply_markup=ADMIN_KEYBOARD,
+        )
     elif role == Role.USER:
         name = registry_user.get("username", "") if registry_user else ""
-        await message.answer(f"Добро пожаловать, {name}!\n\n{COMMANDS_USER}")
+        await message.answer(
+            f"Добро пожаловать, {name}!",
+            reply_markup=USER_KEYBOARD,
+        )
     else:
         state = resolve_guest_state(registry_user)
         if state == GuestState.NO_RECORD:

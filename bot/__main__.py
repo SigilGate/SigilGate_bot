@@ -6,7 +6,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import load_config
 from bot.handlers import admin, guest, start, user
-from bot.handlers import reg, trial
+from bot.handlers import reg, trial, announce, appeals
 from bot.middlewares.auth import AuthMiddleware
 
 logging.basicConfig(
@@ -26,6 +26,7 @@ async def main() -> None:
     dp["admin_ids"] = config["admin_ids"]
     dp["scripts_path"] = config["scripts_path"]
     dp["verbose"] = config["verbose"]
+    dp["channel_id"] = config["channel_id"]
 
     dp.update.middleware(AuthMiddleware(
         store_path=config["store_path"],
@@ -35,6 +36,8 @@ async def main() -> None:
     dp.include_router(start.router)
     dp.include_router(reg.router)
     dp.include_router(admin.router)
+    dp.include_router(announce.router)
+    dp.include_router(appeals.router)
     dp.include_router(user.router)
     dp.include_router(trial.router)
     dp.include_router(guest.router)

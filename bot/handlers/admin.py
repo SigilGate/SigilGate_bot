@@ -2,7 +2,7 @@ import json
 import logging
 
 from aiogram import Bot, F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, or_f
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardButton,
@@ -175,7 +175,7 @@ async def _cleanup_trial_devices(
 # /users
 # ---------------------------------------------------------------------------
 
-@router.message(Command("users"))
+@router.message(or_f(Command("users"), F.text == "👥 Пользователи"))
 async def cmd_users(
     message: Message,
     role: Role,

@@ -27,10 +27,15 @@ def load_config() -> dict:
 
     verbose = os.environ.get("SIGILGATE_VERBOSE", "").lower() in ("1", "true", "yes")
 
+    channel_id = os.environ.get("SIGILGATE_CHANNEL_ID", "")
+    if not channel_id:
+        logger.warning("SIGILGATE_CHANNEL_ID is not set, channel messaging will not work")
+
     return {
         "token": token,
         "store_path": store_path,
         "admin_ids": admin_ids,
         "scripts_path": scripts_path,
         "verbose": verbose,
+        "channel_id": channel_id,
     }

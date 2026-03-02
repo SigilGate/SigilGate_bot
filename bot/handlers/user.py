@@ -4,7 +4,7 @@ import logging
 
 from PIL import Image
 from aiogram import F, Router
-from aiogram.filters import Command, StateFilter
+from aiogram.filters import Command, StateFilter, or_f
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
@@ -46,12 +46,17 @@ class ActivateDeviceStates(StatesGroup):
 # Keyboards
 # ---------------------------------------------------------------------------
 
-def _kb_devices_list(devices: list[dict]) -> InlineKeyboardMarkup:
+def _kb_devices_list(devices: list[dict], show_appeals: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [InlineKeyboardButton(text=d["device"], callback_data=f"mydev:c:{d['uuid']}")]
         for d in devices
     ]
     rows.append([InlineKeyboardButton(text="+ Добавить устройство", callback_data="mydev:add")])
+    if show_appeals:
+        rows.append([
+            InlineKeyboardButton(text="✍ Написать администратору", callback_data="appeal:new"),
+            InlineKeyboardButton(text="📋 Мои обращения",          callback_data="appeal:my_list"),
+        ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -69,7 +74,8 @@ def _kb_device_card(uuid: str, links: list[str], status: str = "") -> InlineKeyb
         rows.append([InlineKeyboardButton(text="⏸ Деактивировать", callback_data=f"mydev:deactivate:{uuid}")])
     if status != "archived":
         rows.append([InlineKeyboardButton(text="✏ Переименовать", callback_data=f"mydev:rename:{uuid}")])
-    rows.append([InlineKeyboardButton(text="🗑 Удалить устройство", callback_data=f"mydev:del:{uuid}")])
+    rows.append([InlineKeyboardButton(text="🗑 Удалить устройство",    callback_data=f"mydev:del:{uuid}")])
+    rows.append([InlineKeyboardButton(text="⚠ Сообщить о проблеме", callback_data=f"appeal:new:device:{uuid}")])
     for i, link in enumerate(links):
         label = "📋 Скопировать конфигурацию" if len(links) == 1 else f"📋 Конфигурация {i + 1}"
         rows.append([
@@ -220,7 +226,7 @@ async def _fetch_config(
 # /devices
 # ---------------------------------------------------------------------------
 
-@router.message(Command("devices"))
+@router.message(or_f(Command("devices"), F.text == "📱 Устройства"))
 async def cmd_devices(
     message: Message,
     role: Role,
@@ -243,7 +249,7 @@ async def cmd_devices(
 
     await message.answer(
         _list_text(devices),
-        reply_markup=_kb_devices_list(devices),
+        reply_markup=_kb_devices_list(devices, show_appeals=(role == Role.USER)),
     )
 
 
@@ -312,7 +318,7 @@ async def cb_devices_back(
     await callback.message.delete()
     await callback.message.answer(
         _list_text(devices),
-        reply_markup=_kb_devices_list(devices),
+        reply_markup=_kb_devices_list(devices, show_appeals=(role == Role.USER)),
     )
     await callback.answer()
 
@@ -394,7 +400,7 @@ async def add_device_name(
     if devices is not None:
         await message.answer(
             _list_text(devices),
-            reply_markup=_kb_devices_list(devices),
+            reply_markup=_kb_devices_list(devices, show_appeals=(role == Role.USER)),
         )
 
 
@@ -426,7 +432,7 @@ async def cb_add_cancel(
 
     await callback.message.edit_text(
         _list_text(devices),
-        reply_markup=_kb_devices_list(devices),
+        reply_markup=_kb_devices_list(devices, show_appeals=(role == Role.USER)),
     )
     await callback.answer()
 
@@ -505,7 +511,7 @@ async def cb_device_delete_confirm(
     if devices is not None:
         await callback.message.answer(
             _list_text(devices),
-            reply_markup=_kb_devices_list(devices),
+            reply_markup=_kb_devices_list(devices, show_appeals=(role == Role.USER)),
         )
     else:
         await callback.message.answer("Устройство удалено.")
