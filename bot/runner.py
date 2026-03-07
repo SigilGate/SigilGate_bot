@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 # Тип функции отправки сообщения в чат (например, message.answer или bot.send_message)
 SendFunc = Callable[[str], Coroutine[Any, Any, Any]]
 
-
 async def run_script(
     cmd: list[str],
     send: SendFunc | None = None,
