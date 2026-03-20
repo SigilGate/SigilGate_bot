@@ -1,0 +1,12 @@
+services:
+  bot:
+    build: .
+    image: sigilgate-bot:latest
+    container_name: sigilgate-bot
+    restart: unless-stopped
+    env_file:
+      - /home/sigil/.config/sigilgate-bot.env
+    volumes:
+      - /home/sigil/SigilGate/registry:/home/sigil/SigilGate/registry
+      - /home/sigil/SigilGate/scripts:/home/sigil/SigilGate/scripts:ro
+      - /home/sigil/.ssh:/home/sigil/.ssh:ro
