@@ -1,6 +1,13 @@
 name: Deploy Bot
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'bot/**'
+      - 'requirements.txt'
+      - 'Dockerfile'
+      - 'entrypoint.sh'
   workflow_dispatch:
 
 jobs:
@@ -16,6 +23,5 @@ jobs:
           script: |
             cd ~/SigilGate/SigilGate_bot
             git pull origin main
-            source .venv/bin/activate
-            pip install -q -r requirements.txt
-            echo "${{ secrets.DEPLOY_SUDO_PASSWORD }}" | sudo -S systemctl restart sigilgate-bot
+            docker compose build
+            docker compose up -d
