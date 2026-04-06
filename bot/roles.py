@@ -3,6 +3,8 @@ import logging
 from enum import Enum
 from pathlib import Path
 
+from bot.crypto import hash_telegram_id
+
 logger = logging.getLogger(__name__)
 
 
@@ -33,15 +35,21 @@ def resolve_guest_state(registry_user: dict | None) -> GuestState:
 
 
 def find_user_by_telegram_id(telegram_id: int, store_path: str) -> dict | None:
+    """Ищет пользователя по telegram_id, сравнивая по hash_telegram_id."""
     if not store_path:
         return None
     users_dir = Path(store_path) / "users"
     if not users_dir.is_dir():
         return None
+    try:
+        tg_hash = hash_telegram_id(telegram_id)
+    except RuntimeError as e:
+        logger.error("Не удалось вычислить hash_telegram_id: %s", e)
+        return None
     for file in users_dir.glob("*.json"):
         try:
             data = json.loads(file.read_text())
-            if data.get("telegram_id") == telegram_id:
+            if data.get("hash_telegram_id") == tg_hash:
                 return data
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to read %s: %s", file, e)

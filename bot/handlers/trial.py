@@ -15,6 +15,7 @@ from aiogram.types import (
     Message,
 )
 
+from bot.crypto import hash_telegram_id
 from bot.qr import make_qr_photo
 from bot.roles import Role
 from bot.runner import run_script
@@ -89,11 +90,12 @@ async def cmd_trial(
     await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
 
     telegram_id = message.from_user.id
+    tg_hash_prefix = hash_telegram_id(telegram_id)[:16]
 
     # --- Шаг 1: получаем все триал-устройства пользователя ---
 
     rc, stdout, stderr = await run_script(
-        [f"{scripts_path}/trial/find.sh", "--telegram-id", str(telegram_id)],
+        [f"{scripts_path}/trial/find.sh", "--hash-telegram-id", tg_hash_prefix],
     )
     if rc != 0:
         logger.error("trial/find.sh failed: %s", stderr)
@@ -146,7 +148,7 @@ async def cmd_trial(
 
     # --- Шаг 4: создаём новое триал-устройство ---
 
-    device_name = f"{telegram_id}{new_digit}"
+    device_name = f"{tg_hash_prefix}{new_digit}"
 
     rc, stdout, stderr = await run_script(
         [

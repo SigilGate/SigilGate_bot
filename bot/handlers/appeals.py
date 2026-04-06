@@ -33,6 +33,7 @@ from aiogram.types import (
 )
 
 from bot.appeals import get_appeal, list_appeals
+from bot.crypto import decrypt_telegram_id
 from bot.roles import Role
 from bot.runner import run_script
 
@@ -76,7 +77,7 @@ def _fmt_appeal_card(appeal: dict, show_messages: bool = True) -> str:
     subject   = appeal.get("subject", "—")
     created   = appeal.get("created", "")[:10]
     device    = appeal.get("device_uuid")
-    admin_tg  = appeal.get("admin_telegram_id")
+    admin_tg  = appeal.get("admin_encrypted_telegram_id")
 
     header = (
         f"<b>Обращение #{aid}</b>\n"
@@ -493,9 +494,10 @@ async def on_reply_text(
 
     # Маршрутизация: user → admin, admin → user
     if reply_as == "user":
-        admin_tg_id = appeal.get("admin_telegram_id")
-        if admin_tg_id:
+        enc_admin = appeal.get("admin_encrypted_telegram_id")
+        if enc_admin:
             try:
+                admin_tg_id = decrypt_telegram_id(enc_admin)
                 aid_short = appeal_id[:8]
                 username  = appeal.get("username", "?")
                 await bot.send_message(
@@ -508,9 +510,10 @@ async def on_reply_text(
         await message.answer("Сообщение отправлено.")
 
     else:  # admin
-        user_tg_id = appeal.get("telegram_id")
-        if user_tg_id:
+        enc_user = appeal.get("encrypted_telegram_id")
+        if enc_user:
             try:
+                user_tg_id = decrypt_telegram_id(enc_user)
                 await bot.send_message(
                     user_tg_id,
                     f"<b>Ответ по вашему обращению</b>\n\n{text}",
@@ -691,9 +694,10 @@ async def cb_admin_accept(
         return
 
     # Уведомить пользователя
-    user_tg_id = appeal.get("telegram_id")
-    if user_tg_id:
+    enc_user = appeal.get("encrypted_telegram_id")
+    if enc_user:
         try:
+            user_tg_id = decrypt_telegram_id(enc_user)
             await bot.send_message(
                 user_tg_id,
                 "Ваше обращение принято. Администратор свяжется с вами в ближайшее время.",
@@ -825,9 +829,10 @@ async def cb_admin_close(
         return
 
     # Уведомить пользователя
-    user_tg_id = appeal.get("telegram_id")
-    if user_tg_id:
+    enc_user = appeal.get("encrypted_telegram_id")
+    if enc_user:
         try:
+            user_tg_id = decrypt_telegram_id(enc_user)
             await bot.send_message(
                 user_tg_id,
                 "Ваше обращение закрыто. Если у вас остались вопросы — создайте новое обращение.",

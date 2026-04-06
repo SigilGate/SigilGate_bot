@@ -9,6 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from bot.crypto import hash_telegram_id
 from bot.roles import Role
 from bot.runner import run_script
 
@@ -63,10 +64,11 @@ def _is_telegram_id_unique(telegram_id: int, store_path: str) -> bool:
     users_dir = Path(store_path) / "users"
     if not users_dir.is_dir():
         return True
+    tg_hash = hash_telegram_id(telegram_id)
     for file in users_dir.glob("*.json"):
         try:
             data = json.loads(file.read_text())
-            if data.get("telegram_id") == telegram_id:
+            if data.get("hash_telegram_id") == tg_hash:
                 return False
         except (json.JSONDecodeError, OSError):
             pass

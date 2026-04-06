@@ -71,7 +71,7 @@ def list_users_for_broadcast(store_path: str) -> list[dict]:
             continue
         if data.get("username") == _TRIAL_USERNAME:
             continue
-        if not data.get("telegram_id"):
+        if not data.get("encrypted_telegram_id"):
             continue
 
         result.append(data)

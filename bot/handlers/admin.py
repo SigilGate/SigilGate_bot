@@ -10,6 +10,7 @@ from aiogram.types import (
     Message,
 )
 
+from bot.crypto import decrypt_telegram_id, hash_telegram_id
 from bot.roles import Role
 from bot.runner import run_script
 
@@ -101,7 +102,7 @@ def _format_user_card(user: dict) -> str:
         f"Статус: {fmt(user.get('status'))}\n"
         f"Email: {fmt(user.get('email'))}\n"
         f"Telegram: {fmt(user.get('telegram'))}\n"
-        f"Telegram ID: {fmt(user.get('telegram_id'))}\n"
+        f"Telegram hash: {fmt(user.get('hash_telegram_id'))}\n"
         f"Ноды: {fmt(user.get('core_nodes'))}\n"
         f"Дата регистрации: {fmt(user.get('created'))}"
     )
@@ -140,23 +141,24 @@ async def _fetch_users(
 # ---------------------------------------------------------------------------
 
 async def _cleanup_trial_devices(
-    telegram_id: int,
+    hash_tg_id: str,
     scripts_path: str,
     verbose: bool,
     send,
 ) -> None:
     """Удаляет все триал-устройства пользователя после одобрения регистрации."""
+    hash_prefix = hash_tg_id[:16]
     rc, stdout, stderr = await run_script(
-        [f"{scripts_path}/trial/find.sh", "--telegram-id", str(telegram_id)],
+        [f"{scripts_path}/trial/find.sh", "--hash-telegram-id", hash_prefix],
     )
     if rc != 0:
-        logger.warning("trial/find.sh failed for tg_id=%s: %s", telegram_id, stderr)
+        logger.warning("trial/find.sh failed for hash=%s: %s", hash_prefix, stderr)
         return
 
     try:
         devices = json.loads(stdout)
     except json.JSONDecodeError:
-        logger.warning("trial/find.sh returned invalid JSON for tg_id=%s: %s", telegram_id, stdout)
+        logger.warning("trial/find.sh returned invalid JSON for hash=%s: %s", hash_prefix, stdout)
         return
 
     for dev in devices:
@@ -497,19 +499,22 @@ async def cb_user_core(
         await callback.answer("Ошибка при одобрении заявки.", show_alert=True)
         return
 
-    tg_id = user.get("telegram_id")
-    if tg_id:
+    enc_tg_id = user.get("encrypted_telegram_id")
+    hash_tg_id = user.get("hash_telegram_id")
+    if enc_tg_id:
         try:
+            real_tg_id = decrypt_telegram_id(enc_tg_id)
             await bot.send_message(
-                tg_id,
+                real_tg_id,
                 "Ваша заявка одобрена. Добро пожаловать в Sigil Gate!\n"
                 "Введите /start для начала работы.",
             )
         except Exception as e:
-            logger.warning("Failed to notify approved user %s: %s", tg_id, e)
+            logger.warning("Failed to notify approved user: %s", e)
 
-        # Удаляем триал-устройства одобренного пользователя
-        await _cleanup_trial_devices(tg_id, scripts_path, verbose, callback.message.answer)
+    # Удаляем триал-устройства одобренного пользователя
+    if hash_tg_id:
+        await _cleanup_trial_devices(hash_tg_id, scripts_path, verbose, callback.message.answer)
 
     await _refresh_user_card(callback, user_id, status_filter, scripts_path, verbose)
     await callback.answer()
@@ -812,19 +817,22 @@ async def cb_reg_core(
         parse_mode="HTML",
     )
 
-    tg_id = user.get("telegram_id")
-    if tg_id:
+    enc_tg_id = user.get("encrypted_telegram_id")
+    hash_tg_id = user.get("hash_telegram_id")
+    if enc_tg_id:
         try:
+            real_tg_id = decrypt_telegram_id(enc_tg_id)
             await bot.send_message(
-                tg_id,
+                real_tg_id,
                 "Ваша заявка одобрена. Добро пожаловать в Sigil Gate!\n"
                 "Введите /start для начала работы.",
             )
         except Exception as e:
-            logger.warning("Failed to notify approved user %s: %s", tg_id, e)
+            logger.warning("Failed to notify approved user: %s", e)
 
-        # Удаляем триал-устройства одобренного пользователя
-        await _cleanup_trial_devices(tg_id, scripts_path, verbose, callback.message.answer)
+    # Удаляем триал-устройства одобренного пользователя
+    if hash_tg_id:
+        await _cleanup_trial_devices(hash_tg_id, scripts_path, verbose, callback.message.answer)
 
     await callback.answer()
 

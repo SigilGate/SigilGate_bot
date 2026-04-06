@@ -11,7 +11,9 @@ bot/handlers/announce.py
 Администратор остается скрыт от получателей — все сообщения идут от бота.
 """
 
+import json
 import logging
+from pathlib import Path
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter, or_f
@@ -25,6 +27,7 @@ from aiogram.types import (
 )
 
 from bot.appeals import list_users_for_broadcast
+from bot.crypto import decrypt_telegram_id
 from bot.roles import Role
 
 logger = logging.getLogger(__name__)
@@ -68,7 +71,7 @@ def _kb_users(users: list[dict]) -> InlineKeyboardMarkup:
             label = f"⏸ {label}"
         rows.append([InlineKeyboardButton(
             text=label,
-            callback_data=f"send:u:{u['telegram_id']}:{u['username'][:20]}",
+            callback_data=f"send:u:{u['id']}:{u['username'][:20]}",
         )])
     rows.append([InlineKeyboardButton(text="← Назад", callback_data="send:back_to_targets")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -128,11 +131,29 @@ async def _do_send(
     if target in ("broadcast", "all"):
         users = list_users_for_broadcast(store_path)
         for user in users:
-            await _send_to(user["telegram_id"])
+            enc = user.get("encrypted_telegram_id")
+            if not enc:
+                continue
+            try:
+                await _send_to(decrypt_telegram_id(enc))
+            except Exception as e:
+                logger.warning("Failed to decrypt telegram_id for user %s: %s", user.get("id"), e)
+                failed += 1
 
     if target.startswith("user:"):
-        _, tg_id, _ = target.split(":", 2)
-        await _send_to(int(tg_id))
+        _, user_reg_id, _ = target.split(":", 2)
+        user_file = Path(store_path) / "users" / f"{user_reg_id}.json"
+        try:
+            user_data = json.loads(user_file.read_text())
+            enc = user_data.get("encrypted_telegram_id")
+            if enc:
+                await _send_to(decrypt_telegram_id(enc))
+            else:
+                logger.warning("User %s has no encrypted_telegram_id", user_reg_id)
+                failed += 1
+        except Exception as e:
+            logger.warning("Failed to load/decrypt user %s: %s", user_reg_id, e)
+            failed += 1
 
     return sent, failed
 
