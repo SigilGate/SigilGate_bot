@@ -15,6 +15,11 @@ from bot.runner import run_script
 
 logger = logging.getLogger(__name__)
 
+_MAINTENANCE = (
+    "⏳ Эта функция временно недоступна — идёт техническое обслуживание сети.\n"
+    "Мы сообщим, когда всё будет готово."
+)
+
 router = Router()
 
 
@@ -90,16 +95,8 @@ def _confirm_text(username: str, email: str | None) -> str:
 # ---------------------------------------------------------------------------
 
 @router.message(or_f(Command("reg"), F.text == "📝 Зарегистрироваться"), StateFilter(None))
-async def cmd_reg(message: Message, state: FSMContext, role: Role) -> None:
-    if role != Role.GUEST:
-        await message.answer("Вы уже зарегистрированы в системе.")
-        return
-
-    await state.set_state(RegStates.waiting_username)
-    await message.answer(
-        "Регистрация в Sigil Gate.\n\nВведите ваш никнейм:",
-        reply_markup=_kb_cancel(),
-    )
+async def cmd_reg(message: Message) -> None:
+    await message.answer(_MAINTENANCE)
 
 
 # ---------------------------------------------------------------------------
@@ -107,26 +104,9 @@ async def cmd_reg(message: Message, state: FSMContext, role: Role) -> None:
 # ---------------------------------------------------------------------------
 
 @router.message(RegStates.waiting_username)
-async def reg_username(message: Message, state: FSMContext,
-                       store_path: str) -> None:
-    username = (message.text or "").strip()
-
-    if not username:
-        await message.answer("Никнейм не может быть пустым. Попробуйте ещё раз:",
-                              reply_markup=_kb_cancel())
-        return
-
-    if not await asyncio.to_thread(_is_username_unique, username, store_path):
-        await message.answer("Этот никнейм уже занят. Введите другой:",
-                              reply_markup=_kb_cancel())
-        return
-
-    await state.update_data(username=username)
-    await state.set_state(RegStates.waiting_email)
-    await message.answer(
-        "Введите email для связи (необязательно):",
-        reply_markup=_kb_email(),
-    )
+async def reg_username(message: Message, state: FSMContext) -> None:
+    await state.clear()
+    await message.answer(_MAINTENANCE)
 
 
 # ---------------------------------------------------------------------------
@@ -135,23 +115,8 @@ async def reg_username(message: Message, state: FSMContext,
 
 @router.message(RegStates.waiting_email)
 async def reg_email(message: Message, state: FSMContext) -> None:
-    email = (message.text or "").strip()
-
-    if not email:
-        await message.answer("Введите email или нажмите «Пропустить»:",
-                              reply_markup=_kb_email())
-        return
-
-    if "@" not in email or "." not in email.split("@")[-1]:
-        await message.answer("Некорректный email. Попробуйте ещё раз или нажмите «Пропустить»:",
-                              reply_markup=_kb_email())
-        return
-
-    await state.update_data(email=email)
-    await state.set_state(RegStates.confirm)
-    data = await state.get_data()
-    await message.answer(_confirm_text(data["username"], email),
-                         reply_markup=_kb_confirm())
+    await state.clear()
+    await message.answer(_MAINTENANCE)
 
 
 # ---------------------------------------------------------------------------
@@ -160,12 +125,8 @@ async def reg_email(message: Message, state: FSMContext) -> None:
 
 @router.callback_query(RegStates.waiting_email, F.data == "reg:skip_email")
 async def reg_skip_email(callback: CallbackQuery, state: FSMContext) -> None:
-    await state.update_data(email=None)
-    await state.set_state(RegStates.confirm)
-    data = await state.get_data()
-    await callback.message.edit_text(_confirm_text(data["username"], None),
-                                     reply_markup=_kb_confirm())
-    await callback.answer()
+    await state.clear()
+    await callback.answer(_MAINTENANCE, show_alert=True)
 
 
 # ---------------------------------------------------------------------------
@@ -173,88 +134,9 @@ async def reg_skip_email(callback: CallbackQuery, state: FSMContext) -> None:
 # ---------------------------------------------------------------------------
 
 @router.callback_query(RegStates.confirm, F.data == "reg:submit")
-async def reg_submit(
-    callback: CallbackQuery,
-    state: FSMContext,
-    bot: Bot,
-    store_path: str,
-    scripts_path: str,
-    admin_ids: set,
-    verbose: bool,
-) -> None:
-    tg_user = callback.from_user
-    data = await state.get_data()
-    username: str = data["username"]
-    email: str | None = data.get("email")
-
-    # Повторная проверка уникальности по telegram_id (на случай гонки)
-    if not await asyncio.to_thread(_is_telegram_id_unique, tg_user.id, store_path):
-        await state.clear()
-        await callback.message.edit_text(
-            "Вы уже подали заявку ранее. Ожидайте решения администратора."
-        )
-        await callback.answer()
-        return
-
-    # Формируем команду create.sh
-    cmd_create = [
-        f"{scripts_path}/users/create.sh",
-        "--username", username,
-        "--status", "inactive",
-        "--telegram-id", str(tg_user.id),
-    ]
-    if tg_user.username:
-        cmd_create += ["--telegram", f"@{tg_user.username}"]
-    if email:
-        cmd_create += ["--email", email]
-
-    rc, stdout, stderr = await run_script(
-        cmd_create,
-        send=callback.message.answer,
-        verbose=verbose,
-    )
-
-    if rc != 0:
-        logger.error("users/create.sh failed: %s", stderr)
-        await callback.message.edit_text(
-            "Произошла ошибка при отправке заявки. Попробуйте позже."
-        )
-        await state.clear()
-        await callback.answer()
-        return
-
-    user_id = stdout.strip()
-
-    cmd_commit = [
-        f"{scripts_path}/store/commit.sh",
-        "--message", f"Reg request: {username} (ID: {user_id}) via Telegram",
-    ]
-    await run_script(cmd_commit, send=callback.message.answer, verbose=verbose)
-
+async def reg_submit(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await callback.message.edit_text(
-        "Ваша заявка направлена администратору и будет рассмотрена в ближайшее время."
-    )
-    await callback.answer()
-
-    # Уведомление администраторов с inline-кнопками
-    tg_name = f"@{tg_user.username}" if tg_user.username else f"id={tg_user.id}"
-    notify_text = (
-        "<b>Новая заявка на регистрацию</b>\n\n"
-        f"Пользователь: {username}\n"
-        f"Telegram: {tg_name}\n"
-        f"ID в реестре: {user_id}"
-    )
-    kb_notify = InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✓ Одобрить",      callback_data=f"reg:approve:{user_id}"),
-        InlineKeyboardButton(text="✗ Удалить",       callback_data=f"reg:decline:{user_id}"),
-        InlineKeyboardButton(text="⚑ Заблокировать", callback_data=f"reg:ban:{user_id}"),
-    ]])
-    for admin_id in admin_ids:
-        try:
-            await bot.send_message(admin_id, notify_text, reply_markup=kb_notify, parse_mode="HTML")
-        except Exception as e:
-            logger.warning("Failed to notify admin %s: %s", admin_id, e)
+    await callback.answer(_MAINTENANCE, show_alert=True)
 
 
 # ---------------------------------------------------------------------------

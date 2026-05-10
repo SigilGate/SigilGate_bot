@@ -23,6 +23,11 @@ from bot.runner import run_script
 
 logger = logging.getLogger(__name__)
 
+_MAINTENANCE = (
+    "⏳ Эта функция временно недоступна — идёт техническое обслуживание сети.\n"
+    "Мы сообщим, когда всё будет готово."
+)
+
 router = Router()
 
 
@@ -328,22 +333,8 @@ async def cb_devices_back(
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data == "mydev:add")
-async def cb_add_device_start(
-    callback: CallbackQuery,
-    role: Role,
-    registry_user: dict | None,
-    state: FSMContext,
-) -> None:
-    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    await state.set_state(AddDeviceStates.waiting_name)
-    await callback.message.edit_text(
-        "Введите название нового устройства:",
-        reply_markup=_kb_add_cancel(),
-    )
-    await callback.answer()
+async def cb_add_device_start(callback: CallbackQuery) -> None:
+    await callback.answer(_MAINTENANCE, show_alert=True)
 
 
 # ---------------------------------------------------------------------------
@@ -351,57 +342,9 @@ async def cb_add_device_start(
 # ---------------------------------------------------------------------------
 
 @router.message(AddDeviceStates.waiting_name)
-async def add_device_name(
-    message: Message,
-    role: Role,
-    registry_user: dict | None,
-    state: FSMContext,
-    scripts_path: str,
-    verbose: bool,
-) -> None:
-    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
-        await state.clear()
-        await message.answer("Доступ ограничен.")
-        return
-
-    device_name = (message.text or "").strip()
-
-    if not device_name:
-        await message.answer(
-            "Название не может быть пустым. Попробуйте ещё раз:",
-            reply_markup=_kb_add_cancel(),
-        )
-        return
-
-    if len(device_name) > 64:
-        await message.answer(
-            "Название слишком длинное (максимум 64 символа). Попробуйте ещё раз:",
-            reply_markup=_kb_add_cancel(),
-        )
-        return
-
+async def add_device_name(message: Message, state: FSMContext) -> None:
     await state.clear()
-
-    cmd = [
-        f"{scripts_path}/devices/add.sh",
-        "--user", str(registry_user["id"]),
-        "--device", device_name,
-    ]
-    rc, stdout, stderr = await run_script(cmd, send=message.answer, verbose=verbose)
-
-    if rc != 0:
-        logger.error("devices/add.sh failed: %s", stderr)
-        await message.answer("Не удалось добавить устройство. Попробуйте позже.")
-        return
-
-    await message.answer(f"Устройство <b>{device_name}</b> успешно добавлено.", parse_mode="HTML")
-
-    devices = await _fetch_devices(registry_user["id"], scripts_path, verbose, message.answer)
-    if devices is not None:
-        await message.answer(
-            _list_text(devices),
-            reply_markup=_kb_devices_list(devices, show_appeals=(role == Role.USER)),
-        )
+    await message.answer(_MAINTENANCE)
 
 
 # ---------------------------------------------------------------------------
@@ -442,41 +385,8 @@ async def cb_add_cancel(
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("mydev:del:"))
-async def cb_device_delete(
-    callback: CallbackQuery,
-    role: Role,
-    registry_user: dict | None,
-    scripts_path: str,
-    verbose: bool,
-) -> None:
-    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    uuid = callback.data.split(":", 2)[2]
-
-    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
-    rc, stdout, _ = await run_script(cmd_get, verbose=False)
-    if rc != 0 or not stdout:
-        await callback.answer("Устройство не найдено.", show_alert=True)
-        return
-
-    try:
-        device = json.loads(stdout)
-    except json.JSONDecodeError:
-        await callback.answer("Ошибка при разборе данных.", show_alert=True)
-        return
-
-    if device.get("user_id") != registry_user["id"]:
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    await callback.message.edit_caption(
-        f"Удалить устройство <b>{device['device']}</b>?\n\nЭто действие необратимо.",
-        reply_markup=_kb_delete_confirm(uuid),
-        parse_mode="HTML",
-    )
-    await callback.answer()
+async def cb_device_delete(callback: CallbackQuery) -> None:
+    await callback.answer(_MAINTENANCE, show_alert=True)
 
 
 # ---------------------------------------------------------------------------
@@ -484,39 +394,8 @@ async def cb_device_delete(
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("mydev:delok:"))
-async def cb_device_delete_confirm(
-    callback: CallbackQuery,
-    role: Role,
-    registry_user: dict | None,
-    scripts_path: str,
-    verbose: bool,
-) -> None:
-    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    uuid = callback.data.split(":", 2)[2]
-
-    cmd = [f"{scripts_path}/devices/remove.sh", "--uuid", uuid]
-    rc, stdout, stderr = await run_script(cmd, send=callback.message.answer, verbose=verbose)
-
-    if rc != 0:
-        logger.error("devices/remove.sh failed: %s", stderr)
-        await callback.message.edit_caption("Не удалось удалить устройство. Попробуйте позже.")
-        await callback.answer()
-        return
-
-    devices = await _fetch_devices(registry_user["id"], scripts_path, verbose, callback.message.answer)
-    await callback.message.delete()
-    if devices is not None:
-        await callback.message.answer(
-            _list_text(devices),
-            reply_markup=_kb_devices_list(devices, show_appeals=(role == Role.USER)),
-        )
-    else:
-        await callback.message.answer("Устройство удалено.")
-
-    await callback.answer()
+async def cb_device_delete_confirm(callback: CallbackQuery) -> None:
+    await callback.answer(_MAINTENANCE, show_alert=True)
 
 
 # ---------------------------------------------------------------------------
@@ -560,49 +439,8 @@ async def cb_device_delete_cancel(
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("mydev:rename:"))
-async def cb_device_rename_start(
-    callback: CallbackQuery,
-    role: Role,
-    registry_user: dict | None,
-    state: FSMContext,
-    scripts_path: str,
-    verbose: bool,
-) -> None:
-    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    uuid = callback.data.split(":", 2)[2]
-
-    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
-    rc, stdout, _ = await run_script(cmd_get, verbose=False)
-    if rc != 0 or not stdout:
-        await callback.answer("Устройство не найдено.", show_alert=True)
-        return
-
-    try:
-        device = json.loads(stdout)
-    except json.JSONDecodeError:
-        await callback.answer("Ошибка при разборе данных.", show_alert=True)
-        return
-
-    if device.get("user_id") != registry_user["id"]:
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    await state.set_state(RenameDeviceStates.waiting_new_name)
-    await state.update_data(
-        uuid=uuid,
-        chat_id=callback.message.chat.id,
-        message_id=callback.message.message_id,
-    )
-
-    await callback.message.edit_caption(
-        f"Введите новое название для устройства <b>{device['device']}</b>:",
-        reply_markup=_kb_rename_cancel(),
-        parse_mode="HTML",
-    )
-    await callback.answer()
+async def cb_device_rename_start(callback: CallbackQuery) -> None:
+    await callback.answer(_MAINTENANCE, show_alert=True)
 
 
 # ---------------------------------------------------------------------------
@@ -610,81 +448,9 @@ async def cb_device_rename_start(
 # ---------------------------------------------------------------------------
 
 @router.message(RenameDeviceStates.waiting_new_name)
-async def rename_device_name(
-    message: Message,
-    role: Role,
-    registry_user: dict | None,
-    state: FSMContext,
-    scripts_path: str,
-    verbose: bool,
-) -> None:
-    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
-        await state.clear()
-        await message.answer("Доступ ограничен.")
-        return
-
-    new_name = (message.text or "").strip()
-
-    if not new_name:
-        await message.answer(
-            "Название не может быть пустым. Попробуйте ещё раз:",
-            reply_markup=_kb_rename_cancel(),
-        )
-        return
-
-    if len(new_name) > 64:
-        await message.answer(
-            "Название слишком длинное (максимум 64 символа). Попробуйте ещё раз:",
-            reply_markup=_kb_rename_cancel(),
-        )
-        return
-
-    data = await state.get_data()
-    uuid = data["uuid"]
-    chat_id = data.get("chat_id")
-    message_id = data.get("message_id")
+async def rename_device_name(message: Message, state: FSMContext) -> None:
     await state.clear()
-
-    cmd = [f"{scripts_path}/devices/update.sh", "--uuid", uuid, "--device", new_name]
-    rc, _, stderr = await run_script(cmd, send=message.answer if verbose else None, verbose=verbose)
-
-    await message.delete()
-
-    if rc != 0:
-        logger.error("devices/update.sh failed: %s", stderr)
-        await message.answer("Не удалось переименовать устройство. Попробуйте позже.")
-        return
-
-    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
-    rc, stdout, _ = await run_script(cmd_get, verbose=False)
-    if rc != 0:
-        await message.answer(f"Устройство переименовано в <b>{new_name}</b>.", parse_mode="HTML")
-        return
-
-    try:
-        device = json.loads(stdout)
-    except json.JSONDecodeError:
-        await message.answer(f"Устройство переименовано в <b>{new_name}</b>.", parse_mode="HTML")
-        return
-
-    links = await _fetch_config(uuid, scripts_path, verbose, message.answer)
-
-    if chat_id and message_id:
-        try:
-            photo = _make_card_photo(links)
-            text = _format_device_card(device, links)
-            kb = _kb_device_card(uuid, links, device.get("status", ""))
-            await message.bot.edit_message_media(
-                chat_id=chat_id,
-                message_id=message_id,
-                media=InputMediaPhoto(media=photo, caption=text, parse_mode="HTML"),
-                reply_markup=kb,
-            )
-        except Exception:
-            logger.exception("Failed to edit card message after rename")
-            await _send_device_card(message, device, links)
-    else:
-        await _send_device_card(message, device, links)
+    await message.answer(_MAINTENANCE)
 
 
 # ---------------------------------------------------------------------------
@@ -733,69 +499,8 @@ async def cb_rename_cancel(
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("mydev:activate:"))
-async def cb_device_activate_start(
-    callback: CallbackQuery,
-    role: Role,
-    registry_user: dict | None,
-    state: FSMContext,
-    scripts_path: str,
-    verbose: bool,
-) -> None:
-    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    uuid = callback.data.split(":", 2)[2]
-
-    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
-    rc, stdout, _ = await run_script(cmd_get, verbose=False)
-    if rc != 0 or not stdout:
-        await callback.answer("Устройство не найдено.", show_alert=True)
-        return
-
-    try:
-        device = json.loads(stdout)
-    except json.JSONDecodeError:
-        await callback.answer("Ошибка при разборе данных.", show_alert=True)
-        return
-
-    if device.get("user_id") != registry_user["id"]:
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    if device.get("status") != "inactive":
-        await callback.answer("Устройство уже активно или архивировано.", show_alert=True)
-        return
-
-    rc, stdout, stderr = await run_script(
-        [f"{scripts_path}/nodes/list-entry.sh", "--user", str(registry_user["id"])],
-        send=callback.message.answer, verbose=verbose,
-    )
-    if rc != 0:
-        logger.error("nodes/list-entry.sh failed: %s", stderr)
-        await callback.answer("Не удалось получить список Entry-нод.", show_alert=True)
-        return
-
-    try:
-        nodes = json.loads(stdout)
-    except json.JSONDecodeError:
-        logger.error("nodes/list-entry.sh returned invalid JSON: %s", stdout)
-        await callback.answer("Ошибка при получении списка нод.", show_alert=True)
-        return
-
-    if not nodes:
-        await callback.answer("Нет доступных Entry-нод. Обратитесь к администратору.", show_alert=True)
-        return
-
-    await state.set_state(ActivateDeviceStates.waiting_entry_node)
-    await state.update_data(uuid=uuid, device_name=device["device"], nodes=nodes)
-
-    await callback.message.edit_caption(
-        f"Выберите Entry-ноду для активации устройства <b>{device['device']}</b>:",
-        reply_markup=_kb_entry_node_selection(nodes),
-        parse_mode="HTML",
-    )
-    await callback.answer()
+async def cb_device_activate_start(callback: CallbackQuery) -> None:
+    await callback.answer(_MAINTENANCE, show_alert=True)
 
 
 # ---------------------------------------------------------------------------
@@ -803,69 +508,9 @@ async def cb_device_activate_start(
 # ---------------------------------------------------------------------------
 
 @router.callback_query(ActivateDeviceStates.waiting_entry_node, F.data.startswith("mydev:actnode:"))
-async def cb_device_activate_node(
-    callback: CallbackQuery,
-    role: Role,
-    registry_user: dict | None,
-    state: FSMContext,
-    scripts_path: str,
-    verbose: bool,
-) -> None:
-    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
-        await state.clear()
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    index = int(callback.data.split(":")[2])
-    data = await state.get_data()
-    uuid = data["uuid"]
-    device_name = data["device_name"]
-    nodes = data["nodes"]
-
-    if index >= len(nodes):
-        await callback.answer("Ошибка: нода не найдена.", show_alert=True)
-        return
-
-    node = nodes[index]
+async def cb_device_activate_node(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-
-    rc, _, stderr = await run_script(
-        [
-            f"{scripts_path}/entry/add-client.sh",
-            "--host", node["ip"],
-            "--uuid", uuid,
-            "--service-name", node["service_name"],
-            "--name", device_name,
-        ],
-        send=callback.message.answer, verbose=verbose,
-    )
-    if rc != 0:
-        logger.error("entry/add-client.sh failed: %s", stderr)
-        await callback.answer("Ошибка при активации устройства на ноде.", show_alert=True)
-        return
-
-    rc, _, stderr = await run_script(
-        [f"{scripts_path}/devices/update.sh", "--uuid", uuid, "--status", "active"],
-        send=callback.message.answer, verbose=verbose,
-    )
-    if rc != 0:
-        logger.error("devices/update.sh --status active failed: %s", stderr)
-        await callback.answer("Устройство добавлено на ноду, но статус не обновлён.", show_alert=True)
-        return
-
-    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
-    rc, stdout, _ = await run_script(cmd_get, verbose=False)
-    if rc == 0:
-        try:
-            device = json.loads(stdout)
-            links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
-            await _edit_device_card(callback, device, links)
-        except json.JSONDecodeError:
-            await callback.message.edit_caption("Устройство активировано.")
-    else:
-        await callback.message.edit_caption("Устройство активировано.")
-
-    await callback.answer()
+    await callback.answer(_MAINTENANCE, show_alert=True)
 
 
 # ---------------------------------------------------------------------------
@@ -914,54 +559,5 @@ async def cb_device_activate_cancel(
 # ---------------------------------------------------------------------------
 
 @router.callback_query(F.data.startswith("mydev:deactivate:"))
-async def cb_device_deactivate(
-    callback: CallbackQuery,
-    role: Role,
-    registry_user: dict | None,
-    scripts_path: str,
-    verbose: bool,
-) -> None:
-    if role not in (Role.USER, Role.ADMIN) or registry_user is None:
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    uuid = callback.data.split(":", 2)[2]
-
-    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
-    rc, stdout, _ = await run_script(cmd_get, verbose=False)
-    if rc != 0 or not stdout:
-        await callback.answer("Устройство не найдено.", show_alert=True)
-        return
-
-    try:
-        device = json.loads(stdout)
-    except json.JSONDecodeError:
-        await callback.answer("Ошибка при разборе данных.", show_alert=True)
-        return
-
-    if device.get("user_id") != registry_user["id"]:
-        await callback.answer("Доступ ограничен.", show_alert=True)
-        return
-
-    rc, _, stderr = await run_script(
-        [f"{scripts_path}/devices/deactivate.sh", "--uuid", uuid],
-        send=callback.message.answer, verbose=verbose,
-    )
-    if rc != 0:
-        logger.error("devices/deactivate.sh failed: %s", stderr)
-        await callback.answer("Ошибка при деактивации устройства.", show_alert=True)
-        return
-
-    cmd_get = [f"{scripts_path}/devices/get.sh", "--uuid", uuid]
-    rc, stdout, _ = await run_script(cmd_get, verbose=False)
-    if rc == 0:
-        try:
-            device = json.loads(stdout)
-            links = await _fetch_config(uuid, scripts_path, verbose, callback.message.answer)
-            await _edit_device_card(callback, device, links)
-        except json.JSONDecodeError:
-            await callback.message.edit_caption("Устройство деактивировано.")
-    else:
-        await callback.message.edit_caption("Устройство деактивировано.")
-
-    await callback.answer()
+async def cb_device_deactivate(callback: CallbackQuery) -> None:
+    await callback.answer(_MAINTENANCE, show_alert=True)
