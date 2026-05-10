@@ -7,6 +7,6 @@ services:
     env_file:
       - /home/sigil/.config/sigilgate-bot.env
     volumes:
-      - /home/sigil/SigilGate/registry:/home/sigil/SigilGate/registry
-      - /home/sigil/SigilGate/scripts:/home/sigil/SigilGate/scripts:ro
+      - /home/sigil/SigilGate/OpenSigilGate/registry:/home/sigil/SigilGate/OpenSigilGate/registry
+      - /home/sigil/SigilGate/OpenSigilGate/scripts:/home/sigil/SigilGate/OpenSigilGate/scripts:ro
       - /home/sigil/.ssh:/home/sigil/.ssh:ro
